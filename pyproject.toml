@@ -56,7 +56,7 @@ target-version = ["py312"]
 [tool.isort]
 profile = "black"
 line_length = 88
-known_first_party = ["config", "rag", "llm", "state", "slack", "middleware", "agent", "calendar", "admin"]
+known_first_party = ["config", "rag", "llm", "state", "slack", "middleware", "agent", "gcal", "admin"]
 
 [tool.ruff]
 line-length = 88
