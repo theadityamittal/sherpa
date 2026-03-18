@@ -72,6 +72,14 @@ class Settings(BaseSettings):
     agent_worker_reserved_concurrency: int = Field(default=5)
     sqs_visibility_timeout: int = Field(default=900)
 
+    # --- Slack ---
+    slack_signing_secret_arn: str = Field(default="", alias="SLACK_SIGNING_SECRET_ARN")
+    rate_limit_window_seconds: int = Field(default=60)
+    max_message_length: int = Field(default=4000)
+    injection_strike_limit: int = Field(default=3)
+    sqs_queue_url: str = Field(default="", alias="SQS_QUEUE_URL")
+    api_gateway_id: str = Field(default="", alias="API_GATEWAY_ID")
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

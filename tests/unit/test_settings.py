@@ -78,8 +78,13 @@ class TestSettings:
         with pytest.raises(ValidationError):
             settings.chunk_size = 9999
 
-    def test_missing_required_env_var_raises(self):
+    def test_missing_required_env_var_raises(self, monkeypatch, tmp_path):
         """Missing required env vars raise validation error."""
+        monkeypatch.delenv("PINECONE_INDEX_NAME", raising=False)
+        monkeypatch.delenv("DYNAMODB_TABLE_NAME", raising=False)
+        monkeypatch.delenv("S3_BUCKET_NAME", raising=False)
+        monkeypatch.chdir(tmp_path)  # avoid loading .env from project root
+
         from config.settings import Settings
 
         with pytest.raises(ValidationError):
@@ -97,3 +102,20 @@ class TestSettings:
         s1 = get_settings()
         s2 = get_settings()
         assert s1 is s2
+
+    def test_slack_settings_defaults(self, monkeypatch):
+        """New Slack settings should exist with correct defaults."""
+        monkeypatch.setenv("PINECONE_INDEX_NAME", "test")
+        monkeypatch.setenv("DYNAMODB_TABLE_NAME", "test")
+        monkeypatch.setenv("S3_BUCKET_NAME", "test")
+        monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+
+        from config.settings import Settings
+
+        settings = Settings()
+        assert settings.slack_signing_secret_arn == ""
+        assert settings.rate_limit_window_seconds == 60
+        assert settings.max_message_length == 4000
+        assert settings.injection_strike_limit == 3
+        assert settings.sqs_queue_url == ""
+        assert settings.api_gateway_id == ""
