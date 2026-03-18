@@ -5,28 +5,28 @@
 [![CI](https://github.com/theadityamittal/onboard-assist/actions/workflows/ci.yml/badge.svg)](https://github.com/theadityamittal/onboard-assist/actions)
 [![Coverage: 99%](https://img.shields.io/badge/coverage-99%25-brightgreen.svg)]()
 
-Adaptive AI-driven Slack bot that onboards volunteers at nonprofit organizations. Asks intake questions, generates a personalized plan, walks through it conversationally using the org's knowledge base, and takes real actions — assigning Slack channels, creating calendar events, and tracking progress across sessions.
+Slack bot that onboards nonprofit volunteers. Asks intake questions, builds a personalized plan, then walks through it: answering from the org's knowledge base, assigning Slack channels, scheduling Google Calendar meetings. Picks up where it left off across sessions.
 
-Built as a generic platform with [Changing the Present](https://changingthepresent.org) as the demo tenant.
+Built as a distributable platform. Any Slack workspace can install it. [Changing the Present](https://changingthepresent.org) is the demo tenant.
 
-## Problem
+## Why this exists
 
-Nonprofit volunteer onboarding is manual, inconsistent, and time-consuming. New volunteers get different information depending on who onboards them, team leads repeat the same orientation dozens of times, and there's no tracking of who completed what.
+I volunteered at Changing the Present and watched the same onboarding happen differently every time depending on who was running it. New volunteers got inconsistent info, team leads repeated themselves constantly, and nobody knew who'd actually finished orientation. This is my attempt to fix that with a bot.
 
-## How It Works
+## How it works
 
 ```
 1. Workspace admin installs via "Add to Slack" OAuth flow
-2. Admin provides org website URL → bot scrapes and indexes the knowledge base
-3. New volunteer joins workspace → bot DMs them automatically
-4. Intake questions determine role and experience level
-5. Personalized onboarding plan generated (5-8 steps)
-6. Bot walks through plan conversationally:
+2. Admin provides org website URL, bot scrapes and indexes the knowledge base
+3. New volunteer joins workspace, bot DMs them
+4. Intake questions figure out their role and experience
+5. Bot generates a personalized onboarding plan (5-8 steps)
+6. Walks through the plan conversationally:
    - Answers questions from the knowledge base (RAG)
-   - Assigns volunteer to relevant Slack channels
+   - Assigns volunteer to the right Slack channels
    - Creates orientation meeting on Google Calendar
    - Tracks progress, resumes across sessions
-   - Adapts the plan when context changes
+   - Replans if the conversation goes in a different direction
 7. Completion record saved for audit trail
 ```
 
@@ -77,58 +77,54 @@ Supporting: DynamoDB (state) | S3 (docs) | Secrets Manager | CloudWatch
 Scheduled: Health Check (daily) | Nudge (daily) | Kill Switch (budget SNS)
 ```
 
-### Seven Lambda Functions
+### Lambda functions
 
-| Lambda | Trigger | Purpose |
+There are seven. Each has a single job.
+
+| Lambda | Trigger | What it does |
 |---|---|---|
-| Slack Handler | API Gateway POST | Parse events, run inbound middleware, enqueue to SQS |
-| Slack OAuth | API Gateway GET | Exchange auth code for bot token, store in DynamoDB |
-| Google OAuth | API Gateway GET | Exchange auth code for refresh token, resume blocked steps |
-| Agent Worker | SQS FIFO | Process messages, run orchestrator, reply via Slack |
-| Kill Switch | SNS (budget alarm) | Disable API Gateway, set DynamoDB flag |
-| Health Check | EventBridge (daily 8am) | Ping Pinecone index, recreate if paused |
-| Nudge | EventBridge (daily 2pm) | DM inactive users after 7 days |
+| Slack Handler | API Gateway POST | Verifies signature, runs middleware chain, enqueues to SQS |
+| Slack OAuth | API Gateway GET | Exchanges auth code for bot token, saves to DynamoDB |
+| Google OAuth | API Gateway GET | Exchanges auth code for refresh token, unblocks calendar steps |
+| Agent Worker | SQS FIFO | Processes the message, runs the orchestrator, replies in Slack |
+| Kill Switch | SNS (budget alarm) | Throttles API Gateway to zero, sets DynamoDB flag |
+| Health Check | EventBridge (daily 8am) | Pings the Pinecone index so it doesn't get paused for inactivity |
+| Nudge | EventBridge (daily 2pm) | DMs users who haven't interacted in 7 days |
 
-### Inbound Middleware Chain
+### Inbound middleware chain
 
-Ordered cheapest to most expensive — short-circuits on first rejection:
+Six checks, ordered cheapest to most expensive. Short-circuits on first rejection.
 
-| # | Middleware | Cost | On Failure |
+| # | Middleware | Cost | On failure |
 |---|---|---|---|
 | 1 | Signature Verification | CPU | Reject (forged request) |
 | 2 | Bot Filter | CPU | Drop (prevent self-loops) |
 | 3 | Empty Filter | CPU | Drop (blank messages) |
-| 4 | Rate Limiter | 1 DynamoDB write | Respond ("Still working on your previous message...") |
-| 5 | Input Sanitizer | CPU + conditional write | Respond ("I can only help with onboarding questions") |
-| 6 | Token Budget Guard | 2 DynamoDB reads | Respond ("Daily/monthly limit reached") |
+| 4 | Rate Limiter | 1 DynamoDB write | "Still working on your previous message..." |
+| 5 | Input Sanitizer | CPU + conditional write | "I can only help with onboarding questions" |
+| 6 | Token Budget Guard | 2 DynamoDB reads | "Daily/monthly limit reached" |
 
-### Agent Orchestration
+### Agent orchestration
 
-Hybrid **Plan + ReAct + Tool Calling** architecture:
+The agent uses a hybrid approach: Plan + ReAct + Tool Calling.
 
-- **Plan phase** — LLM creates personalized onboarding plan from intake answers
-- **Execute phase** — each step uses structured tool calls (search KB, send message, etc.)
-- **ReAct reasoning** — on unexpected input, LLM reasons explicitly before acting
-- **Incremental replanning** — only pending steps modified; completed steps frozen
+On first interaction, the LLM generates a personalized onboarding plan from intake answers. Each step uses structured tool calls (search KB, send message, assign channel, etc.). When the user says something unexpected, the LLM reasons explicitly before acting. Replanning only touches pending steps; completed steps are frozen.
 
-**Two-model split** minimizes cost:
+Two models keep costs low. Nova Micro handles reasoning ("what should I do next?") and Claude 3.5 Haiku handles generation ("write the response"). Reasoning is cheap, generation is where the quality matters.
 
-| Call Type | Model | Purpose |
-|---|---|---|
-| Reasoning | Amazon Nova Micro | "What should I do next?" |
-| Generation | Claude 3.5 Haiku | "Generate the response" |
+### Cost protection
 
-### Three-Layer Cost Protection
+Three layers, plus a nuclear option:
 
 ```
-Layer 3: Workspace monthly cap ($5)     ← protects AWS bill
-  Layer 2: User daily cap (50 turns)    ← prevents one user hogging resources
-    Layer 1: Per-turn budget            ← prevents runaway agent loops
+Layer 3: Workspace monthly cap ($5)     <- protects the AWS bill
+  Layer 2: User daily cap (50 turns)    <- one user can't burn through it
+    Layer 1: Per-turn budget            <- stops runaway agent loops
 
-  + AWS Budget ($10) + Kill Switch      ← nuclear option
+  + AWS Budget ($10) + Kill Switch      <- shuts everything down
 ```
 
-## Tech Stack
+## Tech stack
 
 | Layer | Technology |
 |---|---|
@@ -137,7 +133,7 @@ Layer 3: Workspace monthly cap ($5)     ← protects AWS bill
 | Queue | SQS FIFO (per-user ordering, event deduplication) |
 | State | DynamoDB (single-table design, TTL policies) |
 | LLM | Amazon Bedrock (Nova Micro + Claude Haiku) |
-| Vector Search | Pinecone (namespaces for multi-tenancy, hybrid search, reranking) |
+| Vector search | Pinecone (namespaces for multi-tenancy, hybrid search, reranking) |
 | Storage | S3 (versioned raw HTML archive) |
 | Secrets | AWS Secrets Manager (3 secrets) |
 | Monitoring | CloudWatch (logs, metrics, alarms), X-Ray tracing |
@@ -146,7 +142,7 @@ Layer 3: Workspace monthly cap ($5)     ← protects AWS bill
 | Testing | pytest, moto, TDD, 90%+ coverage gate |
 | Linting | ruff, mypy, pre-commit hooks |
 
-### Estimated Monthly Cost
+### What it costs to run
 
 | Component | Cost |
 |---|---|
@@ -154,11 +150,11 @@ Layer 3: Workspace monthly cap ($5)     ← protects AWS bill
 | Bedrock (Nova Micro + Claude Haiku) | $0.05 - $2.00 |
 | Secrets Manager (3 secrets) | $1.20 |
 | Pinecone, Google Calendar API, Slack Platform | $0 (free tiers) |
-| **Total** | **$1 - $3/month** |
+| Total | $1 - $3/month |
 
-Hard cap: $10/month via AWS Budgets + Kill Switch Lambda.
+If somehow it hits $10/month, AWS Budgets fires an SNS alarm and the Kill Switch Lambda throttles API Gateway to zero.
 
-## Project Structure
+## Project structure
 
 ```
 onboard-assist/
@@ -182,7 +178,7 @@ onboard-assist/
 │   │   ├── tools/                   # search_kb, send_message, assign_channel, calendar_event, manage_progress
 │   │   └── prompts/                 # System, planner, and responder prompts
 │   ├── rag/
-│   │   ├── pipeline.py              # Scrape → S3 → chunk → embed → Pinecone
+│   │   ├── pipeline.py              # Scrape -> S3 -> chunk -> embed -> Pinecone
 │   │   ├── vectorstore.py           # Pinecone client (namespaces, hybrid search, rerank)
 │   │   ├── chunker.py               # Document chunking with overlap
 │   │   ├── confidence.py            # 4-factor confidence scoring
@@ -196,11 +192,11 @@ onboard-assist/
 │   ├── state/
 │   │   ├── dynamo.py                # DynamoDB single-table operations
 │   │   ├── models.py                # Frozen dataclasses (Plan, Steps, Usage, WorkspaceConfig)
-│   │   └── ttl.py                   # TTL policies (60s locks → 90d plans → permanent completions)
+│   │   └── ttl.py                   # TTL policies (60s locks, 90d plans, permanent completions)
 │   ├── gcal/
 │   │   └── callback.py              # Google OAuth Callback Lambda
 │   └── admin/
-│       ├── kill_switch.py           # Kill Switch Lambda (SNS → disable API Gateway)
+│       ├── kill_switch.py           # Kill Switch Lambda (SNS -> disable API Gateway)
 │       ├── health_check.py          # Pinecone health check Lambda (daily cron)
 │       └── nudge.py                 # Inactivity nudge Lambda (daily cron)
 ├── tests/
@@ -208,40 +204,37 @@ onboard-assist/
 │   ├── integration/                 # Mocked AWS integration tests
 │   └── conftest.py                  # Shared fixtures
 ├── infra/
-│   ├── template.yaml                # SAM template (all 46 AWS resources)
+│   ├── template.yaml                # SAM template (46 AWS resources)
 │   └── policies/
 │       └── deploy-policy.json       # Least-privilege IAM for GitHub Actions OIDC
-├── .github/workflows/ci.yml         # Lint → test → coverage gate → SAM validate → deploy
+├── .github/workflows/ci.yml         # Lint, test, coverage gate, SAM validate, deploy
 ├── .pre-commit-config.yaml          # ruff, ruff-format, mypy, pytest, sam-validate
 ├── samconfig.toml
 └── pyproject.toml
 ```
 
-## DynamoDB Single-Table Design
+## DynamoDB single-table design
 
-| pk | sk | Purpose | TTL |
+| pk | sk | What it stores | TTL |
 |---|---|---|---|
-| `WORKSPACE#{id}` | `CONFIG` | Workspace config (org name, bot token, channels) | — |
-| `WORKSPACE#{id}` | `PLAN#{user_id}` | Active onboarding plan + context | 90 days |
-| `WORKSPACE#{id}` | `COMPLETED#{user_id}` | Completion record (audit trail) | Never |
-| `WORKSPACE#{id}` | `USAGE#{user_id}#{date}` | Per-user daily usage | 7 days |
-| `WORKSPACE#{id}` | `USAGE#{yyyy-mm}` | Per-workspace monthly usage | 30 days |
-| `WORKSPACE#{id}` | `LOCK#{user_id}` | Processing lock | 60 seconds |
-| `WORKSPACE#{id}` | `OAUTH#GOOGLE#{user_id}` | Google Calendar tokens | 90 days |
-| `WORKSPACE#{id}` | `OAUTH#SLACK` | Slack bot token | — |
-| `SYSTEM` | `KILL_SWITCH` | Global kill switch flag | — |
-| `SECURITY` | `INJECTION#{ts}` | Injection attempt logs | 90 days |
+| `WORKSPACE#{id}` | `CONFIG` | Org name, bot token, channel mappings | -- |
+| `WORKSPACE#{id}` | `PLAN#{user_id}` | Active onboarding plan + conversation context | 90 days |
+| `WORKSPACE#{id}` | `COMPLETED#{user_id}` | Completion record (kept forever for audit) | Never |
+| `WORKSPACE#{id}` | `USAGE#{user_id}#{date}` | Per-user daily turn count | 7 days |
+| `WORKSPACE#{id}` | `USAGE#{yyyy-mm}` | Per-workspace monthly estimated cost | 30 days |
+| `WORKSPACE#{id}` | `LOCK#{user_id}` | Processing lock (prevents duplicate work) | 60 seconds |
+| `WORKSPACE#{id}` | `OAUTH#GOOGLE#{user_id}` | Google Calendar refresh tokens | 90 days |
+| `WORKSPACE#{id}` | `OAUTH#SLACK` | Slack bot token for this workspace | -- |
+| `SYSTEM` | `KILL_SWITCH` | Global kill switch flag | -- |
+| `SECURITY` | `INJECTION#{ts}` | Logged injection attempts | 90 days |
 
 ## Security
 
-- Slack signature verification (HMAC-SHA256) on every request
-- Prompt injection detection with regex patterns + strike counter (3 strikes → silent drop)
-- Output validation blocks system prompt leaks and persona breaks
-- Tool call validation (allowed names, param constraints, per-turn limits)
-- IAM least-privilege per Lambda function
-- Secrets in Secrets Manager (never in env vars or code)
-- DynamoDB encryption at rest
-- No VPC required — all external services use HTTPS + API key auth
+Every request gets its Slack signature verified (HMAC-SHA256). Prompt injection attempts are caught by regex patterns in the Input Sanitizer middleware and logged to DynamoDB; after 3 strikes the bot silently stops responding to that user. On the output side, a validator blocks responses that leak the system prompt or break persona.
+
+Tool calls are validated against an allowlist with parameter constraints and per-turn limits. Each Lambda function has its own least-privilege IAM role. Secrets live in Secrets Manager, never in environment variables or code. DynamoDB is encrypted at rest.
+
+There's no VPC. Every external service (Slack, Pinecone, Google Calendar) talks over HTTPS with API keys or OAuth. Adding a VPC would mean a NAT Gateway at $32/month just so Lambda can reach the internet, which buys nothing here.
 
 ## Development
 
@@ -270,16 +263,11 @@ sam deploy
 
 ## CI/CD
 
-GitHub Actions pipeline on every push/PR to `main`:
-
-1. **Lint** — ruff check + ruff format + mypy
-2. **Test** — pytest with 90% coverage gate
-3. **SAM Validate** — template linting
-4. **Deploy** — SAM deploy via OIDC (gated by `DEPLOY_ENABLED` variable)
+GitHub Actions runs on every push and PR to `main`. It does ruff lint/format, mypy, pytest with 90% coverage gate, and SAM template validation. Merges to `main` trigger a SAM deploy via OIDC, but only if you've set the `DEPLOY_ENABLED` repo variable (so it won't surprise you).
 
 ## Author
 
-**Aditya Mittal** — [theadityamittal@gmail.com](mailto:theadityamittal@gmail.com)
+Aditya Mittal - [theadityamittal@gmail.com](mailto:theadityamittal@gmail.com)
 
 ## License
 
