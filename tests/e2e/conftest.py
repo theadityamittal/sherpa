@@ -123,10 +123,16 @@ def get_sqs_depth(queue_url: str) -> int:
 
 
 def cleanup_dynamodb_test_records(table: Any) -> None:
-    """Delete any DynamoDB records created by E2E tests."""
-    response = table.scan(
-        FilterExpression="begins_with(pk, :prefix)",
-        ExpressionAttributeValues={":prefix": f"WORKSPACE#{E2E_WORKSPACE_ID}"},
-    )
-    for item in response.get("Items", []):
-        table.delete_item(Key={"pk": item["pk"], "sk": item["sk"]})
+    """Delete any DynamoDB records created by E2E tests.
+
+    Uses Query on the partition key instead of Scan to avoid needing
+    dynamodb:Scan permissions (which the CI role lacks).
+    """
+    pk = f"WORKSPACE#{E2E_WORKSPACE_ID}"
+    with contextlib.suppress(Exception):
+        response = table.query(
+            KeyConditionExpression="pk = :pk",
+            ExpressionAttributeValues={":pk": pk},
+        )
+        for item in response.get("Items", []):
+            table.delete_item(Key={"pk": item["pk"], "sk": item["sk"]})
