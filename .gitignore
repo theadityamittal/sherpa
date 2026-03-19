@@ -65,8 +65,8 @@ samconfig.toml.bak
 # Pinecone
 pinecone_data/
 
-# Lambda layers
-layers/
+# Lambda layer build artifacts (keep source Makefile/requirements.txt)
+infra/layers/deps/python/
 
 # OS files
 .DS_Store
