@@ -26,6 +26,19 @@ from slack.models import SlackCommand, SlackEvent, SQSMessage
 from slack.signature import InvalidSignatureError, verify_slack_signature
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+
+
+def _get_header(headers: dict[str, str], name: str) -> str:
+    """Case-insensitive header lookup."""
+    value = headers.get(name, "")
+    if value:
+        return value
+    lower_name = name.lower()
+    for key, val in headers.items():
+        if key.lower() == lower_name:
+            return val
+    return ""
 
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
@@ -34,25 +47,45 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     headers = event.get("headers", {})
     path = event.get("path", "")
 
+    logger.debug(
+        "lambda_handler invoked: path=%s, body_length=%d, header_keys=%s",
+        path,
+        len(body_str),
+        list(headers.keys()),
+    )
+    logger.debug("body preview: %s", body_str[:500])
+
     # Verify Slack signature
     signing_secret = _get_signing_secret()
+    logger.debug("signing_secret retrieved (length=%d)", len(signing_secret))
+    timestamp = _get_header(headers, "X-Slack-Request-Timestamp")
+    signature = _get_header(headers, "X-Slack-Signature")
+    logger.debug(
+        "timestamp=%s, signature=%s",
+        timestamp,
+        signature[:20] if signature else "(empty)",
+    )
     try:
         verify_slack_signature(
             signing_secret=signing_secret,
             body=body_str,
-            timestamp=headers.get("X-Slack-Request-Timestamp", ""),
-            signature=headers.get("X-Slack-Signature", ""),
+            timestamp=timestamp,
+            signature=signature,
         )
-    except InvalidSignatureError:
-        logger.warning("Invalid Slack signature")
+        logger.debug("Signature verified OK")
+    except InvalidSignatureError as e:
+        logger.warning("Invalid Slack signature: %s", e)
         return _json_response(401, {"error": "Invalid signature"})
 
     # Route by path
     if path == "/slack/commands":
+        logger.debug("Routing to slash command handler")
         return _handle_slash_command(body_str)
     elif path == "/slack/interactions":
+        logger.debug("Routing to interaction handler")
         return _handle_interaction(body_str)
     else:
+        logger.debug("Routing to event handler")
         return _handle_event(body_str)
 
 
@@ -62,14 +95,25 @@ def _handle_event(body_str: str) -> dict[str, Any]:
 
     # URL verification challenge
     if body.get("type") == "url_verification":
+        logger.debug("URL verification challenge")
         return _json_response(200, {"challenge": body["challenge"]})
 
     # Parse event
     slack_event = SlackEvent.from_event_body(body)
+    logger.debug(
+        "Parsed event: type=%s, user=%s, channel=%s, text=%s",
+        slack_event.event_type,
+        slack_event.user_id,
+        slack_event.channel_id,
+        slack_event.text[:80] if slack_event.text else "(empty)",
+    )
 
     # Run middleware chain
     chain = _build_middleware_chain()
     result = chain.run(slack_event)
+    logger.debug(
+        "Middleware result: allowed=%s, reason=%s", result.allowed, result.reason
+    )
 
     if not result.allowed:
         logger.info(
@@ -92,6 +136,7 @@ def _handle_event(body_str: str) -> dict[str, Any]:
         is_dm=slack_event.channel_id.startswith("D"),
         thread_ts=slack_event.thread_ts,
     )
+    logger.debug("SQS message prepared: %s", json.dumps(sqs_msg.to_dict())[:300])
     _enqueue_to_sqs(sqs_msg)
 
     return _json_response(200, {"ok": True})

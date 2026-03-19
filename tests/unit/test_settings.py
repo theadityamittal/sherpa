@@ -113,7 +113,7 @@ class TestSettings:
         from config.settings import Settings
 
         settings = Settings()
-        assert settings.slack_signing_secret_arn == ""
+        assert settings.app_secrets_arn == ""
         assert settings.rate_limit_window_seconds == 60
         assert settings.max_message_length == 4000
         assert settings.injection_strike_limit == 3

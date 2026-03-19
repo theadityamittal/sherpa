@@ -147,6 +147,10 @@ Resources:
       CodeUri: ../src
       Timeout: 900
       MemorySize: 512
+      Environment:
+        Variables:
+          SLACK_SIGNING_SECRET_ARN: !Ref SlackSigningSecret
+          PINECONE_API_KEY_SECRET_ARN: !Ref PineconeApiKeySecret
       Events:
         SQSTrigger:
           Type: SQS
@@ -162,6 +166,8 @@ Resources:
             SecretArn: !Ref PineconeApiKeySecret
         - AWSSecretsManagerGetSecretValuePolicy:
             SecretArn: !Ref GoogleOAuthSecret
+        - AWSSecretsManagerGetSecretValuePolicy:
+            SecretArn: !Ref SlackSigningSecret
         - Statement:
             - Effect: Allow
               Action:
