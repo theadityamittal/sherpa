@@ -45,3 +45,8 @@ def ttl_for_google_oauth() -> int:
 def ttl_for_injection_log() -> int:
     """90-day TTL for injection attempt log records."""
     return int(time.time()) + (90 * _SECONDS_PER_DAY)
+
+
+def ttl_for_secrets() -> int:
+    """90-day TTL for workspace secrets records."""
+    return int(time.time()) + (90 * _SECONDS_PER_DAY)

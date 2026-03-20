@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from botocore.exceptions import ClientError
 from state.models import CompletionRecord, OnboardingPlan, WorkspaceConfig
-from state.ttl import ttl_for_injection_log, ttl_for_lock, ttl_for_plan
+from state.ttl import ttl_for_injection_log, ttl_for_lock, ttl_for_plan, ttl_for_secrets
+
+if TYPE_CHECKING:
+    from security.crypto import FieldEncryptor
 
 logger = logging.getLogger(__name__)
 
@@ -215,4 +219,59 @@ class DynamoStateStore:
                 "timestamp": now.isoformat(),
                 "ttl": ttl_for_injection_log(),
             }
+        )
+
+    def save_workspace_secrets(
+        self,
+        *,
+        workspace_id: str,
+        secrets_blob: dict[str, Any],
+        encryptor: FieldEncryptor,
+    ) -> None:
+        """Encrypt secrets_blob as JSON, store in DynamoDB with 90-day TTL."""
+        encrypted_data = encryptor.encrypt(json.dumps(secrets_blob))
+        self._table.put_item(
+            Item={
+                "pk": f"WORKSPACE#{workspace_id}",
+                "sk": "SECRETS",
+                "encrypted_data": encrypted_data,
+                "ttl": ttl_for_secrets(),
+            }
+        )
+
+    def get_workspace_secrets(
+        self,
+        *,
+        workspace_id: str,
+        encryptor: FieldEncryptor,
+    ) -> dict[str, Any] | None:
+        """Retrieve and decrypt workspace secrets. Returns None if not found."""
+        response = self._table.get_item(
+            Key={"pk": f"WORKSPACE#{workspace_id}", "sk": "SECRETS"}
+        )
+        item = response.get("Item")
+        if not item:
+            return None
+        plaintext = encryptor.decrypt(item["encrypted_data"])
+        result: dict[str, Any] = json.loads(plaintext)
+        return result
+
+    def migrate_bot_token_to_secrets(
+        self,
+        *,
+        workspace_id: str,
+        encryptor: FieldEncryptor,
+    ) -> None:
+        """Read bot_token from WorkspaceConfig, encrypt and move to SECRETS, remove from config."""
+        config = self.get_workspace_config(workspace_id=workspace_id)
+        if not config or not config.bot_token:
+            return
+        self.save_workspace_secrets(
+            workspace_id=workspace_id,
+            secrets_blob={"bot_token": config.bot_token},
+            encryptor=encryptor,
+        )
+        self._table.update_item(
+            Key={"pk": f"WORKSPACE#{workspace_id}", "sk": "CONFIG"},
+            UpdateExpression="REMOVE bot_token",
         )
