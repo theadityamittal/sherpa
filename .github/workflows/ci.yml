@@ -7,6 +7,10 @@ on:
     branches: ['*']
     types: [opened, synchronize, reopened]
 
+permissions:
+  id-token: write
+  contents: read
+
 jobs:
   unit-tests:
     uses: ./.github/workflows/ci-unit.yml
