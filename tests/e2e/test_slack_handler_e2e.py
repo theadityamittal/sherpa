@@ -309,7 +309,10 @@ class TestNewSlashCommandsE2E:
 
         assert response.status_code == 200
         data = response.json()
-        assert "setup" in data["text"].lower()
+        # With setup_complete=True, returns workspace config summary
+        assert (
+            "configuration" in data["text"].lower() or "setup" in data["text"].lower()
+        )
         print(f"  /onboard-setup response: {data['text'][:100]}...")
 
     def test_slash_command_onboard_calendar(self, api_base_url, signing_secret):
@@ -336,5 +339,13 @@ class TestNewSlashCommandsE2E:
 
         assert response.status_code == 200
         data = response.json()
-        assert "calendar" in data["text"].lower()
-        print(f"  /onboard-calendar response: {data['text'][:100]}...")
+        # With setup_complete=True and calendar_enabled=False, returns Block Kit prompt
+        if "blocks" in data:
+            blocks_str = json.dumps(data["blocks"]).lower()
+            assert "calendar" in blocks_str
+            print(
+                f"  /onboard-calendar response: blocks with {len(data['blocks'])} sections"
+            )
+        else:
+            assert "calendar" in data["text"].lower()
+            print(f"  /onboard-calendar response: {data['text'][:100]}...")

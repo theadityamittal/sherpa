@@ -30,7 +30,12 @@ class TestGoogleCalendarE2E:
             google_credentials["client_secret"],
         )
 
-        result = client.refresh_access_token(refresh_token=google_refresh_token)
+        try:
+            result = client.refresh_access_token(refresh_token=google_refresh_token)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 401:
+                pytest.skip("Google refresh token expired (7-day Testing mode limit)")
+            raise
 
         assert "access_token" in result
         assert len(result["access_token"]) > 0
@@ -45,7 +50,12 @@ class TestGoogleCalendarE2E:
         )
 
         # Get fresh access token
-        token_data = client.refresh_access_token(refresh_token=google_refresh_token)
+        try:
+            token_data = client.refresh_access_token(refresh_token=google_refresh_token)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 401:
+                pytest.skip("Google refresh token expired (7-day Testing mode limit)")
+            raise
         access_token = token_data["access_token"]
 
         # Create event 1 hour from now

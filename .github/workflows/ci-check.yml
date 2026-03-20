@@ -1,13 +1,7 @@
 name: 'CI - Lint & Build'
 
 on:
-  pull_request:
-    branches: ['*']
-    types: [opened, synchronize, reopened]
-
-  push:
-    branches: [main]
-
+  workflow_call:
   workflow_dispatch:
 
 permissions:
