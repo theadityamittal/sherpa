@@ -74,6 +74,7 @@ Resources:
         Variables:
           SQS_QUEUE_URL: !Ref MessageQueue
           APP_SECRETS_ARN: !Ref AppSecrets
+          KMS_KEY_ID: !Ref SecretsEncryptionKey
       Events:
         SlackEvents:
           Type: Api
@@ -100,6 +101,12 @@ Resources:
             QueueName: !GetAtt MessageQueue.QueueName
         - AWSSecretsManagerGetSecretValuePolicy:
             SecretArn: !Ref AppSecrets
+        - Statement:
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+              Resource: !GetAtt SecretsEncryptionKey.Arn
 
   SlackOAuthFunction:
     Type: AWS::Serverless::Function
@@ -126,6 +133,11 @@ Resources:
       FunctionName: onboard-assist-google-oauth
       Handler: gcal.callback.lambda_handler
       CodeUri: ../src
+      Environment:
+        Variables:
+          APP_SECRETS_ARN: !Ref AppSecrets
+          DYNAMODB_TABLE_NAME: !Ref StateTable
+          KMS_KEY_ID: !Ref SecretsEncryptionKey
       Events:
         GoogleCallback:
           Type: Api
@@ -138,6 +150,12 @@ Resources:
             TableName: !Ref StateTable
         - AWSSecretsManagerGetSecretValuePolicy:
             SecretArn: !Ref AppSecrets
+        - Statement:
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+              Resource: !GetAtt SecretsEncryptionKey.Arn
 
   AgentWorkerFunction:
     Type: AWS::Serverless::Function
@@ -150,6 +168,7 @@ Resources:
       Environment:
         Variables:
           APP_SECRETS_ARN: !Ref AppSecrets
+          KMS_KEY_ID: !Ref SecretsEncryptionKey
       Events:
         SQSTrigger:
           Type: SQS
@@ -163,6 +182,12 @@ Resources:
             BucketName: !Ref DocumentBucket
         - AWSSecretsManagerGetSecretValuePolicy:
             SecretArn: !Ref AppSecrets
+        - Statement:
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+              Resource: !GetAtt SecretsEncryptionKey.Arn
 
   KillSwitchFunction:
     Type: AWS::Serverless::Function
@@ -275,6 +300,29 @@ Resources:
             Status: Enabled
             NoncurrentVersionExpiration:
               NoncurrentDays: 90
+
+  # ============================================================
+  # KMS
+  # ============================================================
+  SecretsEncryptionKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: Encrypts workspace SECRETS records in DynamoDB
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowRootAccess
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+
+  SecretsEncryptionKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/onboard-assist-secrets
+      TargetKeyId: !Ref SecretsEncryptionKey
 
   # ============================================================
   # Secrets Manager
