@@ -50,6 +50,7 @@ class SetupDependencies:
     sqs_client: Any = None  # boto3 SQS client for self-enqueue
     s3_client: Any = None  # boto3 S3 client for manifest storage
     s3_bucket: str = ""
+    llm_router: Any = None  # LLMRouter — used for fallback guidance messages
 
 
 def _now_iso() -> str:
@@ -100,6 +101,55 @@ def process_setup_message(
 
 
 # ---------------------------------------------------------------------------
+# LLM fallback
+# ---------------------------------------------------------------------------
+
+
+def _llm_fallback(
+    *,
+    text: str,
+    step: str,
+    expected_input: str,
+    state: SetupState,
+    deps: SetupDependencies,
+) -> SetupState:
+    """Call LLM to generate a helpful guidance message and send it via Slack.
+
+    Returns the SAME state so the step does not advance.
+    """
+    if deps.llm_router is None:
+        # No LLM available — send the expected_input hint directly
+        deps.slack_client.send_message(
+            channel=state.admin_user_id,
+            text=expected_input,
+        )
+        return state
+
+    from llm.provider import ModelRole
+
+    prompt = (
+        f"An admin is setting up a Slack workspace bot. "
+        f"Current setup step: {step}. "
+        f"Expected input: {expected_input}. "
+        f"The admin said: {text!r}. "
+        f"Write a short, friendly message (2-3 sentences) that helps them provide what is needed."
+    )
+    messages = [{"role": "user", "content": prompt}]
+    try:
+        response = deps.llm_router.invoke(role=ModelRole.GENERATION, messages=messages)
+        guidance = response.text
+    except Exception:
+        logger.exception("LLM fallback failed for step %s", step)
+        guidance = f"I didn't understand that. {expected_input}"
+
+    deps.slack_client.send_message(
+        channel=state.admin_user_id,
+        text=guidance,
+    )
+    return state
+
+
+# ---------------------------------------------------------------------------
 # Step handlers
 # ---------------------------------------------------------------------------
 
@@ -128,15 +178,17 @@ def _handle_awaiting_url(
     """Validate URL, kick off scraping, transition to scraping step."""
     url = text.strip()
     if not _is_valid_url(url):
-        deps.slack_client.send_message(
-            channel=state.admin_user_id,
-            text=(
+        return _llm_fallback(
+            text=text,
+            step="awaiting_url",
+            expected_input=(
                 "That doesn't look like a valid URL. "
                 "Please enter a full URL including https:// "
                 "(e.g. https://example.com)."
             ),
+            state=state,
+            deps=deps,
         )
-        return state
 
     new_state = replace(state, step="scraping", website_url=url, updated_at=_now_iso())
     deps.state_store.save_setup_state(setup_state=new_state)

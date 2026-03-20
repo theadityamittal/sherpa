@@ -6,6 +6,7 @@ import json
 from unittest.mock import MagicMock, patch
 
 from admin.setup import SetupDependencies, _is_valid_url, process_setup_message
+from llm.provider import LLMResponse
 from state.models import OnboardingPlan, PlanStatus, PlanStep, SetupState, StepStatus
 
 
@@ -306,6 +307,72 @@ class TestAdminSetup:
         sqs_body = json.loads(deps.sqs_client.send_message.call_args[1]["MessageBody"])
         assert sqs_body["type"] == "onboard_user"
         assert sqs_body["user_id"] == "U_PENDING"
+
+
+class TestSetupLLMFallback:
+    def _make_llm_router(
+        self, reply: str = "Please provide a valid URL like https://example.com."
+    ) -> MagicMock:
+        router = MagicMock()
+        router.invoke.return_value = LLMResponse(
+            text=reply,
+            input_tokens=20,
+            output_tokens=15,
+            model_id="gemini-2.5-flash",
+        )
+        return router
+
+    def test_unexpected_input_triggers_llm_call(self):
+        """Non-URL input in awaiting_url step calls LLM router."""
+        state = _make_state(step="awaiting_url")
+        llm_router = self._make_llm_router()
+        deps = _make_deps(llm_router=llm_router)
+
+        process_setup_message(
+            text="what do I do?",
+            action_id=None,
+            setup_state=state,
+            deps=deps,
+        )
+
+        llm_router.invoke.assert_called_once()
+        call_kwargs = llm_router.invoke.call_args[1]
+        assert "awaiting_url" in call_kwargs["messages"][0]["content"]
+        assert "what do I do?" in call_kwargs["messages"][0]["content"]
+
+    def test_llm_response_guides_back_to_current_step(self):
+        """LLM guidance message is sent to the admin via Slack."""
+        guidance = "Please provide a full URL starting with https://."
+        state = _make_state(step="awaiting_url")
+        llm_router = self._make_llm_router(reply=guidance)
+        deps = _make_deps(llm_router=llm_router)
+
+        process_setup_message(
+            text="I'm confused",
+            action_id=None,
+            setup_state=state,
+            deps=deps,
+        )
+
+        deps.slack_client.send_message.assert_called_once()
+        sent_text = deps.slack_client.send_message.call_args[1]["text"]
+        assert sent_text == guidance
+
+    def test_step_does_not_advance_after_fallback(self):
+        """Setup step remains unchanged when LLM fallback is triggered."""
+        state = _make_state(step="awaiting_url")
+        llm_router = self._make_llm_router()
+        deps = _make_deps(llm_router=llm_router)
+
+        result = process_setup_message(
+            text="not a url",
+            action_id=None,
+            setup_state=state,
+            deps=deps,
+        )
+
+        assert result.step == "awaiting_url"
+        assert result is state
 
 
 class TestUrlValidation:
