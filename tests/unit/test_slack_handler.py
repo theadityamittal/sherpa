@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 from slack.handler import (
     _build_middleware_chain,
+    _check_setup_gating,
     _send_ephemeral_rejection,
     lambda_handler,
 )
@@ -271,4 +272,130 @@ class TestSendEphemeralRejection:
             channel_id="C1",
             user_id="U1",
             text="Rate limited",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Helper to build a minimal SlackEvent mock for gating tests
+# ---------------------------------------------------------------------------
+def _make_slack_event(
+    event_type: str = "message",
+    user_id: str = "U123",
+    workspace_id: str = "W456",
+    channel_id: str = "C789",
+) -> MagicMock:
+    from slack.models import EventType
+
+    mock_event = MagicMock()
+    mock_event.event_type = EventType(event_type)
+    mock_event.user_id = user_id
+    mock_event.workspace_id = workspace_id
+    mock_event.channel_id = channel_id
+    return mock_event
+
+
+class TestSetupGating:
+    @patch("slack.handler._send_ephemeral_rejection")
+    @patch("slack.handler._get_state_store")
+    def test_setup_incomplete_non_admin_gets_ephemeral(
+        self, mock_get_store, mock_ephemeral
+    ):
+        """Non-admin events during setup are blocked with an ephemeral message."""
+        mock_store = MagicMock()
+        mock_config = MagicMock()
+        mock_config.setup_complete = False
+        mock_config.admin_user_id = "UADMIN"
+        mock_store.get_workspace_config.return_value = mock_config
+        mock_get_store.return_value = mock_store
+
+        slack_event = _make_slack_event(user_id="U_OTHER")
+        result = _check_setup_gating(slack_event)
+
+        assert result is not None
+        assert result["statusCode"] == 200
+        mock_ephemeral.assert_called_once_with(
+            workspace_id="W456",
+            channel_id="C789",
+            user_id="U_OTHER",
+            text="We're still setting up. Please check back soon!",
+        )
+
+    @patch("slack.handler._send_ephemeral_rejection")
+    @patch("slack.handler._get_state_store")
+    def test_setup_incomplete_admin_passes_through(
+        self, mock_get_store, mock_ephemeral
+    ):
+        """Admin user events are allowed through even when setup is incomplete."""
+        mock_store = MagicMock()
+        mock_config = MagicMock()
+        mock_config.setup_complete = False
+        mock_config.admin_user_id = "UADMIN"
+        mock_store.get_workspace_config.return_value = mock_config
+        mock_get_store.return_value = mock_store
+
+        slack_event = _make_slack_event(user_id="UADMIN")
+        result = _check_setup_gating(slack_event)
+
+        assert result is None
+        mock_ephemeral.assert_not_called()
+
+    @patch("slack.handler._send_ephemeral_rejection")
+    @patch("slack.handler._get_state_store")
+    def test_setup_complete_all_users_pass_through(
+        self, mock_get_store, mock_ephemeral
+    ):
+        """All users pass through when setup is complete."""
+        mock_store = MagicMock()
+        mock_config = MagicMock()
+        mock_config.setup_complete = True
+        mock_store.get_workspace_config.return_value = mock_config
+        mock_get_store.return_value = mock_store
+
+        slack_event = _make_slack_event(user_id="U_ANYONE")
+        result = _check_setup_gating(slack_event)
+
+        assert result is None
+        mock_ephemeral.assert_not_called()
+
+    @patch("slack.handler._send_setup_pending_dm")
+    @patch("slack.handler._get_state_store")
+    def test_team_join_during_setup_creates_pending_plan(self, mock_get_store, mock_dm):
+        """team_join during setup creates a PENDING_SETUP OnboardingPlan."""
+        from state.models import PlanStatus
+
+        mock_store = MagicMock()
+        mock_config = MagicMock()
+        mock_config.setup_complete = False
+        mock_config.admin_user_id = "UADMIN"
+        mock_store.get_workspace_config.return_value = mock_config
+        mock_get_store.return_value = mock_store
+
+        slack_event = _make_slack_event(event_type="team_join", user_id="UNEW")
+        result = _check_setup_gating(slack_event)
+
+        assert result is not None
+        assert result["statusCode"] == 200
+        mock_store.save_plan.assert_called_once()
+        saved_plan = mock_store.save_plan.call_args[0][0]
+        assert saved_plan.status == PlanStatus.PENDING_SETUP
+        assert saved_plan.user_id == "UNEW"
+        assert saved_plan.workspace_id == "W456"
+
+    @patch("slack.handler._send_setup_pending_dm")
+    @patch("slack.handler._get_state_store")
+    def test_team_join_during_setup_sends_brief_dm(self, mock_get_store, mock_dm):
+        """team_join during setup sends a brief welcome DM."""
+        mock_store = MagicMock()
+        mock_config = MagicMock()
+        mock_config.setup_complete = False
+        mock_config.admin_user_id = "UADMIN"
+        mock_store.get_workspace_config.return_value = mock_config
+        mock_get_store.return_value = mock_store
+
+        slack_event = _make_slack_event(event_type="team_join", user_id="UNEW")
+        _check_setup_gating(slack_event)
+
+        mock_dm.assert_called_once_with(
+            workspace_id="W456",
+            user_id="UNEW",
         )

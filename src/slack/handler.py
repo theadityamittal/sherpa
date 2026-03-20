@@ -110,6 +110,11 @@ def _handle_event(body_str: str) -> dict[str, Any]:
         slack_event.text[:80] if slack_event.text else "(empty)",
     )
 
+    # Setup gating: check workspace setup_complete before middleware
+    gating_response = _check_setup_gating(slack_event)
+    if gating_response is not None:
+        return gating_response
+
     # Run middleware chain
     chain = _build_middleware_chain(workspace_id=slack_event.workspace_id)
     result = chain.run(slack_event)
@@ -149,6 +154,83 @@ def _handle_event(body_str: str) -> dict[str, Any]:
     _enqueue_to_sqs(sqs_msg)
 
     return _json_response(200, {"ok": True})
+
+
+def _check_setup_gating(slack_event: Any) -> dict[str, Any] | None:
+    """Check workspace setup_complete; return a response dict to short-circuit, or None to proceed.
+
+    Returns:
+        A 200 response dict if the event should be blocked/handled specially during setup.
+        None if the event should proceed through normal middleware.
+    """
+    from slack.models import EventType
+    from state.models import OnboardingPlan, PlanStatus
+
+    state_store = _get_state_store()
+    config = state_store.get_workspace_config(workspace_id=slack_event.workspace_id)
+
+    # No config or setup already complete → proceed normally
+    if config is None or config.setup_complete:
+        return None
+
+    # Setup is incomplete
+    if slack_event.event_type == EventType.TEAM_JOIN:
+        # Create a pending onboarding plan for the new user
+        plan = OnboardingPlan(
+            workspace_id=slack_event.workspace_id,
+            user_id=slack_event.user_id,
+            user_name="",
+            role="",
+            status=PlanStatus.PENDING_SETUP,
+            version=1,
+            steps=[],
+        )
+        state_store.save_plan(plan)
+
+        # Send brief DM to the new user
+        _send_setup_pending_dm(
+            workspace_id=slack_event.workspace_id,
+            user_id=slack_event.user_id,
+        )
+        logger.info(
+            "team_join during setup: created PENDING_SETUP plan for user %s",
+            slack_event.user_id,
+        )
+        return _json_response(200, {"ok": True})
+
+    # Admin can interact during setup
+    if slack_event.user_id == config.admin_user_id:
+        return None
+
+    # Non-admin: send ephemeral rejection
+    if slack_event.channel_id:
+        _send_ephemeral_rejection(
+            workspace_id=slack_event.workspace_id,
+            channel_id=slack_event.channel_id,
+            user_id=slack_event.user_id,
+            text="We're still setting up. Please check back soon!",
+        )
+    logger.info("Setup incomplete: blocked non-admin user %s", slack_event.user_id)
+    return _json_response(200, {"ok": True})
+
+
+def _send_setup_pending_dm(*, workspace_id: str, user_id: str) -> None:
+    """Send a brief DM to a user who joined during setup."""
+    try:
+        bot_token = _get_bot_token_for_workspace(workspace_id)
+    except ValueError:
+        logger.warning(
+            "No bot_token for workspace %s, skipping setup-pending DM", workspace_id
+        )
+        return
+    try:
+        slack_client = SlackClient(web_client=WebClient(token=bot_token))
+        slack_client.send_message(
+            channel=user_id,
+            text="Welcome! We're still setting up — we'll reach out soon to get you onboarded.",
+        )
+    except Exception:
+        logger.exception("Failed to send setup-pending DM to user %s", user_id)
 
 
 def _handle_slash_command(body_str: str) -> dict[str, Any]:
