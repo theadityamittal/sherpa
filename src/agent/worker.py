@@ -56,6 +56,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             event_type = message.get("event_type", "message")
             metadata = message.get("metadata") or {}
             action_id = metadata.get("action_id")
+            thread_ts = metadata.get("thread_ts")
 
             logger.info(
                 "Processing message workspace=%s user=%s channel=%s event_type=%s text=%s",
@@ -66,12 +67,53 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 text[:80],
             )
 
+            # Kill switch check
+            from admin.kill_switch_check import is_kill_switch_active
+            from state.dynamo import DynamoStateStore
+
+            table_name = os.environ.get("DYNAMODB_TABLE_NAME", "onboard-assist")
+            table = boto3.resource("dynamodb").Table(table_name)
+            state_store = DynamoStateStore(table=table)
+
+            if is_kill_switch_active(state_store):
+                logger.info("Kill switch active, skipping message processing")
+                _release_user_lock(workspace_id=workspace_id, user_id=user_id)
+                continue
+
             logger.debug("Fetching bot token for workspace=%s", workspace_id)
             bot_token = _get_bot_token(workspace_id)
             logger.debug("Bot token retrieved (length=%d)", len(bot_token))
 
             slack_client = SlackClient(web_client=WebClient(token=bot_token))
             logger.debug("SlackClient created")
+
+            # Run worker middleware (InputSanitizer + TokenBudgetGuard)
+            from middleware.inbound.chain import WorkerMiddlewareChain
+            from slack.models import EventType, SlackEvent
+
+            slack_event = SlackEvent(
+                event_id=message.get("event_id", ""),
+                workspace_id=workspace_id,
+                user_id=user_id,
+                channel_id=channel_id,
+                text=text,
+                event_type=EventType(event_type),
+                timestamp=message.get("timestamp", ""),
+                is_bot=False,
+                thread_ts=thread_ts,
+            )
+
+            worker_chain = WorkerMiddlewareChain(state_store=state_store)
+            mw_result = worker_chain.run(slack_event)
+
+            if not mw_result.allowed:
+                logger.info("Worker middleware rejected: %s", mw_result.reason)
+                if mw_result.should_respond and mw_result.reason and channel_id:
+                    slack_client.send_ephemeral(
+                        channel=channel_id, user=user_id, text=mw_result.reason
+                    )
+                _release_user_lock(workspace_id=workspace_id, user_id=user_id)
+                continue
 
             # Check for active SETUP record — route to setup state machine if present
             setup_state = _get_setup_state(workspace_id=workspace_id)
