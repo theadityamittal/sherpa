@@ -2,7 +2,7 @@ AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: >
   Onboard Assist - Adaptive AI onboarding Slack bot for nonprofits.
-  7 Lambda functions, API Gateway, SQS FIFO, DynamoDB, S3.
+  6 Lambda functions, API Gateway, SQS FIFO, DynamoDB, S3.
 
 Globals:
   Function:
@@ -176,6 +176,7 @@ Resources:
       CodeUri: ../src
       Timeout: 900
       MemorySize: 512
+      ReservedConcurrentExecutions: 20
       Environment:
         Variables:
           APP_SECRETS_ARN: !Ref AppSecrets
@@ -233,24 +234,6 @@ Resources:
             Schedule: cron(0 8 * * ? *)
             Description: Daily Pinecone health check at 8 AM UTC
       Policies:
-        - AWSSecretsManagerGetSecretValuePolicy:
-            SecretArn: !Ref AppSecrets
-
-  NudgeFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: onboard-assist-nudge
-      Handler: admin.nudge.lambda_handler
-      CodeUri: ../src
-      Events:
-        DailyNudge:
-          Type: Schedule
-          Properties:
-            Schedule: cron(0 14 * * ? *)
-            Description: Daily inactivity nudge at 2 PM UTC
-      Policies:
-        - DynamoDBReadPolicy:
-            TableName: !Ref StateTable
         - AWSSecretsManagerGetSecretValuePolicy:
             SecretArn: !Ref AppSecrets
 
