@@ -114,6 +114,11 @@ Resources:
       FunctionName: onboard-assist-slack-oauth
       Handler: slack.oauth.lambda_handler
       CodeUri: ../src
+      Environment:
+        Variables:
+          APP_SECRETS_ARN: !Ref AppSecrets
+          DYNAMODB_TABLE_NAME: !Ref StateTable
+          KMS_KEY_ID: !Ref SecretsEncryptionKey
       Events:
         OAuthCallback:
           Type: Api
@@ -126,6 +131,12 @@ Resources:
             TableName: !Ref StateTable
         - AWSSecretsManagerGetSecretValuePolicy:
             SecretArn: !Ref AppSecrets
+        - Statement:
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+              Resource: !GetAtt SecretsEncryptionKey.Arn
 
   GoogleOAuthCallbackFunction:
     Type: AWS::Serverless::Function
