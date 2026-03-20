@@ -237,26 +237,54 @@ class TestGcalCallbackLambdaHandler:
         return {"queryStringParameters": params}
 
     def test_successful_oauth_callback_stores_tokens_and_notifies_admin(self):
-        """Full happy-path: code exchanged, tokens stored encrypted, admin DM sent."""
+        """Full happy-path: code exchanged, tokens stored encrypted, admin DM sent.
+
+        Uses a real DynamoStateStore backed by a mocked DynamoDB table so that
+        save_workspace_secrets actually calls encryptor.encrypt — verifying the
+        encryption path runs before data reaches the store.
+        """
+        import json as _json
+
         from gcal import callback as gcal_cb
+        from state.dynamo import DynamoStateStore
+        from state.models import WorkspaceConfig
 
         token_payload = _make_successful_token_response()
         mock_gcal_client = MagicMock()
         mock_gcal_client.exchange_code.return_value = token_payload
 
-        mock_store = MagicMock()
-        from state.models import WorkspaceConfig
+        # Use a real store backed by a mocked DynamoDB table so save_workspace_secrets
+        # actually calls encryptor.encrypt (rather than a MagicMock short-circuiting it).
+        mock_table = MagicMock()
+        # get_item returns an existing secrets blob (bot_token already in SECRETS)
+        mock_table.get_item.return_value = {
+            "Item": {
+                "pk": "WORKSPACE#W1",
+                "sk": "SECRETS",
+                "encrypted_data": "existing_encrypted",
+            }
+        }
+        real_store = DynamoStateStore(table=mock_table)
 
-        mock_store.get_workspace_config.return_value = WorkspaceConfig(
+        mock_encryptor = MagicMock()
+        # decrypt returns JSON with existing bot_token so _store_tokens can merge
+        mock_encryptor.decrypt.return_value = _json.dumps({"bot_token": "xoxb-test"})
+        mock_encryptor.encrypt.return_value = "newly_encrypted_blob"
+
+        mock_slack_client_inst = MagicMock()
+
+        # Patch get_workspace_config and get_bot_token on the real store
+        # since they involve DynamoDB reads we want to keep simple
+        workspace_config = WorkspaceConfig(
             workspace_id="W1",
             team_name="Test Corp",
             bot_user_id="B001",
             admin_user_id="U_ADMIN",
         )
-        mock_store.get_workspace_secrets.return_value = {"bot_token": "xoxb-test"}
-
-        mock_encryptor = MagicMock()
-        mock_slack_client_inst = MagicMock()
+        real_store.get_workspace_config = MagicMock(return_value=workspace_config)
+        real_store.get_bot_token = MagicMock(return_value="xoxb-test")
+        # Also mock save_workspace_config to avoid DynamoDB update_item complexity
+        real_store.save_workspace_config = MagicMock()
 
         with (
             patch.object(
@@ -267,7 +295,7 @@ class TestGcalCallbackLambdaHandler:
                     "google_client_secret": "gcs",
                 },
             ),
-            patch.object(gcal_cb, "_get_store", return_value=mock_store),
+            patch.object(gcal_cb, "_get_store", return_value=real_store),
             patch("gcal.callback.GoogleCalendarClient", return_value=mock_gcal_client),
             patch("gcal.callback.FieldEncryptor", return_value=mock_encryptor),
             patch("gcal.callback.SlackClient", return_value=mock_slack_client_inst),
@@ -286,16 +314,22 @@ class TestGcalCallbackLambdaHandler:
         assert response["statusCode"] == 200
         assert "connected successfully" in response["body"]
 
-        # Tokens should be saved
-        mock_store.save_workspace_secrets.assert_called_once()
-        secrets_call = mock_store.save_workspace_secrets.call_args.kwargs
-        assert secrets_call["workspace_id"] == "W1"
-        assert secrets_call["secrets_blob"]["google_access_token"] == "acc_tok"
-        assert secrets_call["secrets_blob"]["google_refresh_token"] == "ref_tok"
+        # Encryptor must have been called with the token blob before storing
+        mock_encryptor.encrypt.assert_called()
+        encrypt_arg = mock_encryptor.encrypt.call_args.args[0]
+        encrypted_payload = _json.loads(encrypt_arg)
+        assert encrypted_payload["google_access_token"] == "acc_tok"
+        assert encrypted_payload["google_refresh_token"] == "ref_tok"
+
+        # Encrypted data should be written to DynamoDB
+        mock_table.put_item.assert_called()
+        put_call_item = mock_table.put_item.call_args.kwargs["Item"]
+        assert put_call_item["encrypted_data"] == "newly_encrypted_blob"
+        assert put_call_item["sk"] == "SECRETS"
 
         # calendar_enabled should be set to True
-        mock_store.save_workspace_config.assert_called_once()
-        config_call = mock_store.save_workspace_config.call_args.kwargs
+        real_store.save_workspace_config.assert_called_once()
+        config_call = real_store.save_workspace_config.call_args.kwargs
         assert config_call["calendar_enabled"] is True
 
         # Admin should be notified
@@ -426,25 +460,53 @@ class TestGcalCallbackTokenRefreshFlow:
 
         assert result["access_token"] == "fresh_token"
 
-    def test_revocation_scenario_caller_handles_invalid_grant(self):
-        """Simulate caller logic: catch ValueError, notify admin, clear tokens."""
-        client = GoogleCalendarClient(client_id="cid", client_secret="csec")
-        mock_notify = MagicMock()
-        mock_clear = MagicMock()
+    def test_revocation_scenario_calendar_event_tool_returns_failure_on_invalid_grant(
+        self,
+    ):
+        """CalendarEventTool.execute returns a failure result when token is revoked (invalid_grant).
 
-        revoked = {"error": "invalid_grant", "error_description": "Token revoked."}
+        This exercises the real revocation code path in CalendarEventTool — the actual system
+        component that catches ValueError from GoogleCalendarClient.refresh_access_token and
+        returns a structured failure result.
+        """
+        from agent.tools.calendar_event import CalendarEventTool
 
-        with patch("httpx.post", return_value=_make_httpx_response(400, revoked)):
-            try:
-                client.refresh_access_token(refresh_token="revoked_tok")
-            except ValueError:
-                mock_notify(
-                    admin_id="U_ADMIN",
-                    message="Google Calendar access has been revoked.",
-                )
-                mock_clear(workspace_id="W1")
+        revoked_response = {
+            "error": "invalid_grant",
+            "error_description": "Token revoked.",
+        }
 
-        mock_notify.assert_called_once()
-        notify_call = mock_notify.call_args.kwargs
-        assert "revoked" in notify_call["message"].lower()
-        mock_clear.assert_called_once_with(workspace_id="W1")
+        mock_store = MagicMock()
+        mock_store.get_workspace_secrets.return_value = {
+            "gcal_access_token": "expired_access_token",
+            "gcal_refresh_token": "revoked_refresh_token",
+            # expired 10 minutes ago — forces a refresh attempt
+            "gcal_token_expires_at": 0,
+        }
+        mock_encryptor = MagicMock()
+
+        gcal_client = GoogleCalendarClient(client_id="cid", client_secret="csec")
+
+        tool = CalendarEventTool(
+            gcal_client=gcal_client,
+            encryptor=mock_encryptor,
+            state_store=mock_store,
+            workspace_id="W_REVOKED",
+        )
+
+        with patch(
+            "httpx.post", return_value=_make_httpx_response(400, revoked_response)
+        ):
+            result = tool.execute(
+                title="Onboarding",
+                date="2024-06-01",
+                time="09:00",
+                duration_minutes=30,
+            )
+
+        # The real system code catches ValueError and returns a structured failure
+        assert result.ok is False
+        assert result.error is not None
+        assert "revoked" in result.error.lower()
+        # Secrets should NOT be updated (no successful refresh)
+        mock_store.save_workspace_secrets.assert_not_called()

@@ -54,6 +54,78 @@ def _make_deps(**kwargs) -> SetupDependencies:
 
 
 @pytest.mark.integration
+class TestSlackOAuthCreatesSetupRecord:
+    """Test that the Slack OAuth callback handler creates the initial SETUP record."""
+
+    def test_oauth_callback_creates_setup_state_record(self):
+        """Successful Slack OAuth should call save_setup_state with step='welcome'."""
+        from slack import oauth as slack_oauth
+
+        token_response = {
+            "ok": True,
+            "access_token": "xoxb-test-bot-token",
+            "bot_user_id": "B_BOT",
+            "authed_user": {"id": "U_ADMIN"},
+            "team": {"id": "W_NEW", "name": "New Corp"},
+        }
+        mock_web_client = MagicMock()
+        mock_web_client.oauth_v2_access.return_value = token_response
+
+        mock_table = MagicMock()
+        # DynamoDB Table.put_item is used by save_workspace_config/save_workspace_secrets/save_setup_state
+        mock_table.put_item = MagicMock()
+
+        mock_encryptor = MagicMock()
+        mock_encryptor.encrypt.return_value = "encrypted_blob"
+
+        with (
+            patch("slack.oauth.WebClient", return_value=mock_web_client),
+            patch("slack.oauth.boto3") as mock_boto3,
+            patch("slack.oauth.FieldEncryptor", return_value=mock_encryptor),
+            patch("slack.oauth.DynamoStateStore") as mock_store_cls,
+            patch.dict(
+                "os.environ",
+                {
+                    "DYNAMODB_TABLE_NAME": "onboard-assist",
+                    "KMS_KEY_ID": "arn:aws:kms:us-east-1:123:key/test",
+                },
+            ),
+        ):
+            mock_store = MagicMock()
+            mock_store_cls.return_value = mock_store
+            mock_boto3.resource.return_value.Table.return_value = MagicMock()
+
+            event = {"queryStringParameters": {"code": "oauth_code_abc"}}
+            response = slack_oauth.lambda_handler(event, context=None)
+
+        assert response["statusCode"] == 200
+        assert "successfully" in response["body"]
+
+        # save_setup_state must have been called to create the initial SETUP record
+        mock_store.save_setup_state.assert_called_once()
+        call_kwargs = mock_store.save_setup_state.call_args.kwargs
+        setup_state = call_kwargs["setup_state"]
+        assert setup_state.step == "welcome"
+        assert setup_state.workspace_id == "W_NEW"
+        assert setup_state.admin_user_id == "U_ADMIN"
+
+    def test_oauth_callback_user_denied_does_not_create_setup_record(self):
+        """If the user denies Slack OAuth, no SETUP record should be created."""
+        from slack import oauth as slack_oauth
+
+        with patch("slack.oauth.DynamoStateStore") as mock_store_cls:
+            mock_store = MagicMock()
+            mock_store_cls.return_value = mock_store
+
+            event = {"queryStringParameters": {"error": "access_denied"}}
+            response = slack_oauth.lambda_handler(event, context=None)
+
+        assert response["statusCode"] == 200
+        assert "cancelled" in response["body"].lower()
+        mock_store.save_setup_state.assert_not_called()
+
+
+@pytest.mark.integration
 class TestAdminSetupWelcomeStep:
     def test_welcome_sends_greeting_and_advances_to_awaiting_url(self):
         """Welcome step should DM the admin and transition state to awaiting_url."""
