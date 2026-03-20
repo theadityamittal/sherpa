@@ -263,10 +263,11 @@ class TestSlashCommandEdgeCasesE2E:
         print(f"  Unknown command response: {data['text']}")
 
     def test_interaction_endpoint_returns_ok(self, api_base_url, signing_secret):
-        """The interactions endpoint stub should return 200 OK."""
-        body = {"type": "block_actions", "trigger_id": "e2e_test"}
-        body_str = json.dumps(body)
+        """The interactions endpoint should accept form-encoded payloads."""
+        payload = json.dumps({"type": "block_actions", "trigger_id": "e2e_test"})
+        body_str = urlencode({"payload": payload})
         headers = sign_request(body_str, signing_secret)
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
 
         response = httpx.post(
             f"{api_base_url}/slack/interactions",
@@ -276,4 +277,66 @@ class TestSlashCommandEdgeCasesE2E:
         )
 
         assert response.status_code == 200
-        print(f"  Interaction stub: {response.json()}")
+        print(f"  Interaction response: {response.json()}")
+
+
+@pytest.mark.e2e
+class TestBlockKitInteractionsE2E:
+    """Tests for Block Kit button click payloads."""
+
+    @pytest.fixture(autouse=True)
+    def _cleanup(self, dynamodb_table):
+        yield
+        cleanup_dynamodb_test_records(dynamodb_table)
+
+    def _interaction_payload(
+        self, *, action_id: str, user_id: str = "U_E2E_INTERACT"
+    ) -> dict:
+        return {
+            "type": "block_actions",
+            "trigger_id": f"e2e_trigger_{int(time.time())}",
+            "team": {"id": E2E_WORKSPACE_ID},
+            "user": {"id": user_id},
+            "channel": {"id": "D_E2E_INTERACT"},
+            "actions": [
+                {
+                    "action_id": action_id,
+                    "type": "button",
+                    "value": action_id,
+                }
+            ],
+        }
+
+    def test_interaction_calendar_confirm(self, api_base_url, signing_secret):
+        """Calendar confirm button should be accepted."""
+        payload = json.dumps(self._interaction_payload(action_id="calendar_enable"))
+        body_str = urlencode({"payload": payload})
+        headers = sign_request(body_str, signing_secret)
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+
+        response = httpx.post(
+            f"{api_base_url}/slack/interactions",
+            content=body_str,
+            headers=headers,
+            timeout=15,
+        )
+
+        assert response.status_code == 200
+        print(f"  Calendar confirm: {response.json()}")
+
+    def test_interaction_calendar_skip(self, api_base_url, signing_secret):
+        """Calendar skip button should be accepted."""
+        payload = json.dumps(self._interaction_payload(action_id="calendar_skip_setup"))
+        body_str = urlencode({"payload": payload})
+        headers = sign_request(body_str, signing_secret)
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+
+        response = httpx.post(
+            f"{api_base_url}/slack/interactions",
+            content=body_str,
+            headers=headers,
+            timeout=15,
+        )
+
+        assert response.status_code == 200
+        print(f"  Calendar skip: {response.json()}")
