@@ -266,7 +266,22 @@ class TestNewSlashCommandsE2E:
     """Tests for /onboard-setup and /onboard-calendar commands."""
 
     @pytest.fixture(autouse=True)
-    def _cleanup(self, dynamodb_table):
+    def _seed_and_cleanup(self, dynamodb_table):
+        """Seed workspace CONFIG with setup_complete=True for slash command tests."""
+        dynamodb_table.put_item(
+            Item={
+                "pk": f"WORKSPACE#{E2E_WORKSPACE_ID}",
+                "sk": "CONFIG",
+                "workspace_id": E2E_WORKSPACE_ID,
+                "team_name": "E2E Test Team",
+                "bot_user_id": "U_E2E_BOT",
+                "bot_token": "xoxb-e2e-placeholder",
+                "admin_user_id": "U_E2E_ADMIN",
+                "setup_complete": True,
+                "active": True,
+                "calendar_enabled": False,
+            }
+        )
         yield
         cleanup_dynamodb_test_records(dynamodb_table)
 

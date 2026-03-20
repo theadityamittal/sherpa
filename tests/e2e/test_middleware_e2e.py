@@ -292,12 +292,14 @@ class TestBlockKitInteractionsE2E:
     def _interaction_payload(
         self, *, action_id: str, user_id: str = "U_E2E_INTERACT"
     ) -> dict:
+        ts = f"{int(time.time())}.{int(time.time() * 1000) % 1000:06d}"
         return {
             "type": "block_actions",
             "trigger_id": f"e2e_trigger_{int(time.time())}",
             "team": {"id": E2E_WORKSPACE_ID},
             "user": {"id": user_id},
             "channel": {"id": "D_E2E_INTERACT"},
+            "message": {"ts": ts},
             "actions": [
                 {
                     "action_id": action_id,

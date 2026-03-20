@@ -242,6 +242,7 @@ class TestWorkerSetupRouting:
         # Verify the ephemeral was sent to the right user/channel
         call_kwargs = mock_slack_client.send_ephemeral.call_args.kwargs
         assert call_kwargs["user"] == "UOTHER"
+        assert call_kwargs["channel"] == "C1"
         mock_release.assert_called_once_with(workspace_id="W1", user_id="UOTHER")
 
     @patch("agent.worker._release_user_lock")

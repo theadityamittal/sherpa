@@ -9,6 +9,7 @@ Run: .venv/bin/pytest tests/e2e/test_gcal_e2e.py -v -m e2e --no-cov -s
 
 from __future__ import annotations
 
+import contextlib
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -52,25 +53,34 @@ class TestGoogleCalendarE2E:
         start = (now + timedelta(hours=1)).isoformat()
         end = (now + timedelta(hours=2)).isoformat()
 
-        event = client.create_event(
-            access_token=access_token,
-            summary="E2E Test Event — auto-created, safe to delete",
-            start=start,
-            end=end,
-            description="Created by Sherpa E2E test suite. Will be deleted immediately.",
-        )
+        event_id = None
+        try:
+            event = client.create_event(
+                access_token=access_token,
+                summary="E2E Test Event — auto-created, safe to delete",
+                start=start,
+                end=end,
+                description="Created by Sherpa E2E test suite. Will be deleted immediately.",
+            )
 
-        assert "id" in event
-        event_id = event["id"]
-        print(f"  Created event: {event_id}")
+            assert "id" in event
+            event_id = event["id"]
+            print(f"  Created event: {event_id}")
 
-        # Delete the event via raw HTTP (GoogleCalendarClient doesn't have delete)
-        delete_response = httpx.delete(
-            f"{_CALENDAR_EVENTS_URL}/{event_id}",
-            headers={"Authorization": f"Bearer {access_token}"},
-        )
-        assert delete_response.status_code == 204
-        print(f"  Deleted event: {event_id}")
+            # Delete the event via raw HTTP (GoogleCalendarClient doesn't have delete)
+            delete_response = httpx.delete(
+                f"{_CALENDAR_EVENTS_URL}/{event_id}",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            assert delete_response.status_code == 204
+            print(f"  Deleted event: {event_id}")
+        finally:
+            if event_id is not None:
+                with contextlib.suppress(Exception):
+                    httpx.delete(
+                        f"{_CALENDAR_EVENTS_URL}/{event_id}",
+                        headers={"Authorization": f"Bearer {access_token}"},
+                    )
 
     def test_create_event_with_invalid_token(self, google_credentials):
         """Invalid access token should raise HTTPStatusError."""
