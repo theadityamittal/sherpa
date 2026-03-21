@@ -408,3 +408,54 @@ class TestUnknownStep:
         )
 
         assert result is state
+
+
+class TestAcquireLockTTL:
+    def test_acquire_lock_uses_ttl_seconds_param(self):
+        """acquire_lock passes ttl_seconds through to the DynamoDB item."""
+        from state.dynamo import DynamoStateStore
+
+        mock_table = MagicMock()
+        store = DynamoStateStore(table=mock_table)
+
+        store.acquire_lock(workspace_id="W1", user_id="U1", ttl_seconds=90)
+
+        put_call = mock_table.put_item.call_args
+        item = put_call.kwargs["Item"]
+        # TTL should be ~90s from now
+        import time
+
+        now = int(time.time())
+        assert abs(item["ttl"] - (now + 90)) < 5
+
+    def test_acquire_lock_default_ttl_is_15(self):
+        """Default ttl_seconds should be 15."""
+        from state.dynamo import DynamoStateStore
+
+        mock_table = MagicMock()
+        store = DynamoStateStore(table=mock_table)
+
+        store.acquire_lock(workspace_id="W1", user_id="U1")
+
+        put_call = mock_table.put_item.call_args
+        item = put_call.kwargs["Item"]
+        import time
+
+        now = int(time.time())
+        assert abs(item["ttl"] - (now + 15)) < 5
+
+    def test_acquire_lock_overwrites_expired_lock(self):
+        """acquire_lock condition should allow overwriting expired locks."""
+        from state.dynamo import DynamoStateStore
+
+        mock_table = MagicMock()
+        store = DynamoStateStore(table=mock_table)
+
+        store.acquire_lock(workspace_id="W1", user_id="U1")
+
+        put_call = mock_table.put_item.call_args
+        condition = put_call.kwargs["ConditionExpression"]
+        assert "attribute_not_exists(pk)" in condition
+        assert "#ttl < :now" in condition
+        assert put_call.kwargs["ExpressionAttributeNames"] == {"#ttl": "ttl"}
+        assert ":now" in put_call.kwargs["ExpressionAttributeValues"]

@@ -59,16 +59,23 @@ class DynamoStateStore:
         item = record.to_dynamo_item()
         self._table.put_item(Item=item)
 
-    def acquire_lock(self, *, workspace_id: str, user_id: str) -> bool:
-        """Acquire a processing lock. Returns True if acquired, False if held."""
+    def acquire_lock(
+        self, *, workspace_id: str, user_id: str, ttl_seconds: int = 15
+    ) -> bool:
+        """Acquire a processing lock. Returns True if acquired, False if held.
+
+        Overwrites expired locks immediately (DynamoDB TTL cleanup is lazy).
+        """
         try:
             self._table.put_item(
                 Item={
                     "pk": f"WORKSPACE#{workspace_id}",
                     "sk": f"LOCK#{user_id}",
-                    "ttl": ttl_for_lock(),
+                    "ttl": ttl_for_lock(seconds=ttl_seconds),
                 },
-                ConditionExpression="attribute_not_exists(pk)",
+                ConditionExpression="attribute_not_exists(pk) OR #ttl < :now",
+                ExpressionAttributeNames={"#ttl": "ttl"},
+                ExpressionAttributeValues={":now": int(time.time())},
             )
             return True
         except ClientError as e:
