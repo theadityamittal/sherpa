@@ -323,9 +323,30 @@ def _handle_teams(
 def _transition_to_channels(
     *, state: SetupState, deps: SetupDependencies
 ) -> SetupState:
-    """Fetch channels and show channel_mapping Block Kit."""
+    """Fetch channels, find #general as default, show channel_mapping Block Kit."""
     channels = deps.slack_client.list_channels()
-    blocks = channel_mapping(teams=list(state.teams), channels=channels)
+
+    # Find #general: is_general flag first, then name match, then first channel
+    default_channel = None
+    for ch in channels:
+        if ch.get("is_general"):
+            default_channel = ch
+            break
+    if default_channel is None:
+        for ch in channels:
+            if ch.get("name") == "general":
+                default_channel = ch
+                break
+    if default_channel is None and channels:
+        default_channel = channels[0]
+
+    # Pre-populate all teams mapped to default channel
+    default_id = default_channel["id"] if default_channel else ""
+    pre_mapping = {_slugify(t): default_id for t in state.teams}
+
+    blocks = channel_mapping(
+        teams=list(state.teams), channels=channels, default_channel=default_channel
+    )
 
     deps.slack_client.send_message(
         channel=state.admin_user_id,
@@ -333,7 +354,9 @@ def _transition_to_channels(
         blocks=blocks,
     )
 
-    new_state = replace(state, step="channels", updated_at=_now_iso())
+    new_state = replace(
+        state, step="channels", channel_mapping=pre_mapping, updated_at=_now_iso()
+    )
     deps.state_store.save_setup_state(setup_state=new_state)
     return new_state
 
@@ -341,25 +364,20 @@ def _transition_to_channels(
 def _handle_channels(
     *, text: str, action_id: str | None, state: SetupState, deps: SetupDependencies
 ) -> SetupState:
-    """Handle channel mapping selections.
+    """Handle channel mapping selections and confirm action.
 
-    action_id format: ``channel_map_<slug>`` with selected value in text.
-    When all teams are mapped, transitions to calendar step.
+    Dropdown selections update the mapping. The confirm button
+    triggers transition to calendar step.
     """
+    if action_id == "channel_mapping_confirm":
+        return _transition_to_calendar(state=state, deps=deps)
+
     if action_id and action_id.startswith("channel_map_"):
         selected_channel = text.strip()
-        # Extract slug from action_id
         slug = action_id[len("channel_map_") :]
         new_mapping = {**state.channel_mapping, slug: selected_channel}
         new_state = replace(state, channel_mapping=new_mapping, updated_at=_now_iso())
         deps.state_store.save_setup_state(setup_state=new_state)
-
-        # Check if all teams are mapped
-        expected_slugs = {_slugify(t) for t in state.teams}
-        mapped_slugs = set(new_mapping.keys())
-        if expected_slugs <= mapped_slugs:
-            return _transition_to_calendar(state=new_state, deps=deps)
-
         return new_state
 
     return state

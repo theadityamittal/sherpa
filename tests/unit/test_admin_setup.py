@@ -510,3 +510,106 @@ class TestChannelMappingBlocks:
             if b.get("type") == "section"
         ]
         assert any("/sherpa-setup" in t for t in texts)
+
+
+class TestChannelMappingConfirm:
+    def test_confirm_action_transitions_to_calendar(self):
+        """channel_mapping_confirm action should transition to calendar step."""
+        state = _make_state(
+            step="channels",
+            teams=("Engineering",),
+            channel_mapping={"engineering": "C_GEN"},
+        )
+        deps = _make_deps()
+        deps.state_store.get_pending_users.return_value = []
+
+        result = process_setup_message(
+            text="", action_id="channel_mapping_confirm", setup_state=state, deps=deps
+        )
+
+        assert result.step == "calendar"
+
+    def test_confirm_with_defaults_uses_prepopulated_mapping(self):
+        """Confirming without changing dropdowns should use the default mapping."""
+        state = _make_state(
+            step="channels",
+            teams=("Engineering", "Marketing"),
+            channel_mapping={"engineering": "C_GEN", "marketing": "C_GEN"},
+        )
+        deps = _make_deps()
+        deps.state_store.get_pending_users.return_value = []
+
+        result = process_setup_message(
+            text="", action_id="channel_mapping_confirm", setup_state=state, deps=deps
+        )
+
+        assert result.step == "calendar"
+        assert result.channel_mapping == {"engineering": "C_GEN", "marketing": "C_GEN"}
+
+    def test_dropdown_updates_mapping_without_transition(self):
+        """Dropdown selection should update mapping but not advance step."""
+        state = _make_state(
+            step="channels",
+            teams=("Engineering", "Marketing"),
+            channel_mapping={"engineering": "C_GEN", "marketing": "C_GEN"},
+        )
+        deps = _make_deps()
+
+        result = process_setup_message(
+            text="C_ENG",
+            action_id="channel_map_engineering",
+            setup_state=state,
+            deps=deps,
+        )
+
+        assert result.step == "channels"
+        assert result.channel_mapping["engineering"] == "C_ENG"
+
+
+class TestTransitionToChannelsFindsGeneral:
+    def test_general_channel_used_as_default(self):
+        """_transition_to_channels should find #general and pre-populate mapping."""
+        state = _make_state(step="teams", teams=("Engineering", "Marketing"))
+        deps = _make_deps()
+        deps.slack_client.list_channels.return_value = [
+            {"id": "C_GEN", "name": "general", "is_general": True},
+            {"id": "C_ENG", "name": "engineering"},
+        ]
+
+        result = process_setup_message(
+            text="", action_id="teams_confirm", setup_state=state, deps=deps
+        )
+
+        assert result.step == "channels"
+        # All teams pre-mapped to #general
+        assert result.channel_mapping["engineering"] == "C_GEN"
+        assert result.channel_mapping["marketing"] == "C_GEN"
+
+    def test_fallback_to_name_general(self):
+        """If is_general not present, match by name == 'general'."""
+        state = _make_state(step="teams", teams=("Sales",))
+        deps = _make_deps()
+        deps.slack_client.list_channels.return_value = [
+            {"id": "C_G", "name": "general"},
+            {"id": "C_S", "name": "sales"},
+        ]
+
+        result = process_setup_message(
+            text="", action_id="teams_confirm", setup_state=state, deps=deps
+        )
+
+        assert result.channel_mapping["sales"] == "C_G"
+
+    def test_fallback_to_first_channel(self):
+        """If no #general found, use first channel."""
+        state = _make_state(step="teams", teams=("Sales",))
+        deps = _make_deps()
+        deps.slack_client.list_channels.return_value = [
+            {"id": "C_RAND", "name": "random"},
+        ]
+
+        result = process_setup_message(
+            text="", action_id="teams_confirm", setup_state=state, deps=deps
+        )
+
+        assert result.channel_mapping["sales"] == "C_RAND"
