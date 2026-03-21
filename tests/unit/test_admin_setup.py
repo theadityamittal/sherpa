@@ -613,3 +613,54 @@ class TestTransitionToChannelsFindsGeneral:
         )
 
         assert result.channel_mapping["sales"] == "C_RAND"
+
+
+class TestSlackLinkStripping:
+    def test_angle_bracket_url(self):
+        """Slack auto-link <https://example.com> should be accepted."""
+        state = _make_state(step="awaiting_url")
+        deps = _make_deps()
+        deps.slack_client.list_usergroups.return_value = []
+
+        with patch("rag.scraper.scrape_site", side_effect=Exception("no network")):
+            result = process_setup_message(
+                text="<https://example.com>",
+                action_id=None,
+                setup_state=state,
+                deps=deps,
+            )
+
+        assert result.website_url == "https://example.com"
+        assert result.step == "teams"
+
+    def test_pipe_label_url(self):
+        """Slack rich-link <https://example.com|example.com> should be accepted."""
+        state = _make_state(step="awaiting_url")
+        deps = _make_deps()
+        deps.slack_client.list_usergroups.return_value = []
+
+        with patch("rag.scraper.scrape_site", side_effect=Exception("no network")):
+            result = process_setup_message(
+                text="<https://example.com|example.com>",
+                action_id=None,
+                setup_state=state,
+                deps=deps,
+            )
+
+        assert result.website_url == "https://example.com"
+
+    def test_bare_url_passthrough(self):
+        """Plain URL without Slack formatting should work as-is."""
+        state = _make_state(step="awaiting_url")
+        deps = _make_deps()
+        deps.slack_client.list_usergroups.return_value = []
+
+        with patch("rag.scraper.scrape_site", side_effect=Exception("no network")):
+            result = process_setup_message(
+                text="https://example.com",
+                action_id=None,
+                setup_state=state,
+                deps=deps,
+            )
+
+        assert result.website_url == "https://example.com"
