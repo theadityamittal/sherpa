@@ -9,6 +9,7 @@ from state.ttl import (
     ttl_for_lock,
     ttl_for_monthly_usage,
     ttl_for_plan,
+    ttl_for_setup,
 )
 
 
@@ -53,6 +54,12 @@ class TestTTLPolicy:
         days_90 = 90 * 24 * 60 * 60
         assert abs(ttl - (now + days_90)) < 5
 
+    def test_setup_ttl_is_14_days(self):
+        ttl = ttl_for_setup()
+        now = int(time.time())
+        days_14 = 14 * 24 * 60 * 60
+        assert abs(ttl - (now + days_14)) < 5
+
     def test_all_ttls_are_integers(self):
         assert isinstance(ttl_for_plan(), int)
         assert isinstance(ttl_for_lock(), int)
@@ -60,6 +67,7 @@ class TestTTLPolicy:
         assert isinstance(ttl_for_monthly_usage(), int)
         assert isinstance(ttl_for_google_oauth(), int)
         assert isinstance(ttl_for_injection_log(), int)
+        assert isinstance(ttl_for_setup(), int)
 
     def test_all_ttls_are_in_the_future(self):
         now = int(time.time())
@@ -69,3 +77,4 @@ class TestTTLPolicy:
         assert ttl_for_monthly_usage() > now
         assert ttl_for_google_oauth() > now
         assert ttl_for_injection_log() > now
+        assert ttl_for_setup() > now

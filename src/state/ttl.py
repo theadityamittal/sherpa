@@ -53,5 +53,5 @@ def ttl_for_secrets() -> int:
 
 
 def ttl_for_setup() -> int:
-    """7-day TTL for admin setup state records."""
-    return int(time.time()) + (7 * _SECONDS_PER_DAY)
+    """14-day TTL for admin setup state records."""
+    return int(time.time()) + (14 * _SECONDS_PER_DAY)

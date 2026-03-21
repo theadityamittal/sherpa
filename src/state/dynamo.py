@@ -337,7 +337,7 @@ class DynamoStateStore:
         raise ValueError(msg)
 
     def save_setup_state(self, *, setup_state: SetupState) -> None:
-        """Save or update admin setup state with 7-day TTL."""
+        """Save or update admin setup state with 14-day TTL."""
         self._table.put_item(
             Item={
                 "pk": f"WORKSPACE#{setup_state.workspace_id}",
