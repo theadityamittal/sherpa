@@ -238,17 +238,24 @@ class TestOnboardCalendar:
 
 
 class TestAdminGate:
-    def test_no_config_rejects_setup(self):
-        """CONFIG=None should reject with install message."""
+    def test_no_config_creates_config_and_starts_setup(self):
+        """CONFIG=None should create minimal CONFIG and start fresh setup."""
         mock_store = MagicMock()
         mock_store.get_workspace_config.return_value = None
+        mock_store.get_setup_state.return_value = None
         response = handle_command(
-            _make_command("/sherpa-setup", user_id="ANYONE"),
+            _make_command("/sherpa-setup", user_id="U_FIRST"),
             state_store=mock_store,
         )
         body = response["body"]
-        assert "installed" in body.lower() or "install" in body.lower()
-        mock_store.save_setup_state.assert_not_called()
+        assert "starting" in body.lower() or "setup" in body.lower()
+        mock_store.save_workspace_config.assert_called_once_with(
+            workspace_id="W1",
+            team_name="",
+            bot_user_id="",
+            admin_user_id="U_FIRST",
+        )
+        mock_store.save_setup_state.assert_called_once()
 
     def test_empty_admin_claims_admin(self):
         """CONFIG with empty admin_user_id lets first user claim admin."""

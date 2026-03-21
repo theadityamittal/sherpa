@@ -259,9 +259,10 @@ def _call_process_setup_message(
     from admin.setup import SetupDependencies, process_setup_message
 
     state_store = _get_state_store()
+    secrets = _get_app_secrets()
 
     sqs_queue_url = os.environ.get("SQS_QUEUE_URL", "")
-    google_client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
+    google_client_id = secrets.get("google_client_id", "")
     google_oauth_redirect_uri = os.environ.get("GOOGLE_OAUTH_REDIRECT_URI", "")
 
     deps = SetupDependencies(

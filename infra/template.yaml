@@ -149,6 +149,7 @@ Resources:
           APP_SECRETS_ARN: !Ref AppSecrets
           DYNAMODB_TABLE_NAME: !Ref StateTable
           KMS_KEY_ID: !Ref SecretsEncryptionKey
+          GOOGLE_OAUTH_REDIRECT_URI: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/google/oauth/callback"
       Events:
         GoogleCallback:
           Type: Api
@@ -180,6 +181,7 @@ Resources:
         Variables:
           APP_SECRETS_ARN: !Ref AppSecrets
           KMS_KEY_ID: !Ref SecretsEncryptionKey
+          GOOGLE_OAUTH_REDIRECT_URI: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/google/oauth/callback"
       Events:
         SQSTrigger:
           Type: SQS

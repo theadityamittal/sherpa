@@ -104,15 +104,16 @@ def _handle_setup(
 ) -> dict[str, Any]:
     config = state_store.get_workspace_config(workspace_id=command.workspace_id)
 
-    # No CONFIG = app not installed via OAuth yet
+    # No CONFIG = first-time setup; create minimal CONFIG and claim admin
     if config is None:
-        return _response(
-            "Sherpa hasn't been installed yet. Ask a workspace admin to install it."
+        state_store.save_workspace_config(
+            workspace_id=command.workspace_id,
+            team_name="",
+            bot_user_id="",
+            admin_user_id=command.user_id,
         )
-
-    # Admin gate — unconditional
-    if not config.admin_user_id:
-        # First user to run /sherpa-setup claims admin
+    elif not config.admin_user_id:
+        # CONFIG exists but no admin — first user claims admin
         state_store.update_workspace_config(
             workspace_id=command.workspace_id,
             updates={"admin_user_id": command.user_id},
@@ -127,7 +128,7 @@ def _handle_setup(
         return _response(f"Resuming setup from step: {setup.step}")
 
     # Setup already complete — show config
-    if config.setup_complete:
+    if config is not None and config.setup_complete:
         lines = [
             "*Workspace Configuration*",
             f"• Team: {config.team_name}",
@@ -147,6 +148,7 @@ def _handle_setup(
         updated_at=now,
     )
     state_store.save_setup_state(setup_state=initial_setup)
+    _enqueue_setup_resume(command)
     return _response("Starting workspace setup...")
 
 
