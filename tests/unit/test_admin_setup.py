@@ -7,7 +7,14 @@ from unittest.mock import MagicMock, patch
 
 from admin.setup import SetupDependencies, _is_valid_url, process_setup_message
 from llm.provider import LLMResponse
-from state.models import OnboardingPlan, PlanStatus, PlanStep, SetupState, StepStatus
+from state.models import (
+    OnboardingPlan,
+    PlanStatus,
+    PlanStep,
+    SetupState,
+    StepStatus,
+    WorkspaceConfig,
+)
 
 
 def _make_state(
@@ -227,6 +234,7 @@ class TestAdminSetup:
         state = _make_state(step="calendar")
         deps = _make_deps()
         deps.state_store.get_pending_users.return_value = []
+        deps.state_store.get_workspace_config.return_value = None
         # complete_setup needs a workspace config
         deps.state_store.complete_setup.return_value = None
 
@@ -236,12 +244,14 @@ class TestAdminSetup:
 
         messages = [c[1]["text"] for c in deps.slack_client.send_message.call_args_list]
         assert any("accounts.google.com" in m for m in messages)
-        assert result.calendar_enabled is True
+        assert result.calendar_enabled is False
+        assert result.calendar_oauth_initiated is True
 
     def test_calendar_skip_sets_disabled(self):
         state = _make_state(step="calendar")
         deps = _make_deps()
         deps.state_store.get_pending_users.return_value = []
+        deps.state_store.get_workspace_config.return_value = None
         deps.state_store.complete_setup.return_value = None
 
         result = process_setup_message(
@@ -261,6 +271,7 @@ class TestAdminSetup:
         )
         deps = _make_deps()
         deps.state_store.get_pending_users.return_value = []
+        deps.state_store.get_workspace_config.return_value = None
 
         process_setup_message(text="", action_id=None, setup_state=state, deps=deps)
 
@@ -280,6 +291,7 @@ class TestAdminSetup:
         state = _make_state(step="confirmation")
         deps = _make_deps()
         deps.state_store.get_pending_users.return_value = []
+        deps.state_store.get_workspace_config.return_value = None
 
         process_setup_message(text="", action_id=None, setup_state=state, deps=deps)
 
@@ -289,6 +301,7 @@ class TestAdminSetup:
     def test_pending_users_enqueued_after_setup(self):
         state = _make_state(step="confirmation")
         deps = _make_deps()
+        deps.state_store.get_workspace_config.return_value = None
 
         pending_plan = OnboardingPlan(
             workspace_id="W1",
@@ -735,3 +748,117 @@ class TestResumeHandling:
         assert result is state
         call_kwargs = deps.slack_client.send_message.call_args[1]
         assert call_kwargs.get("blocks") is not None
+
+
+class TestCalendarStateOnEnable:
+    def test_calendar_enable_sets_false_not_true(self):
+        """Calendar enable should set calendar_enabled=False until OAuth completes."""
+        state = _make_state(step="calendar")
+        deps = _make_deps()
+        deps.state_store.get_pending_users.return_value = []
+        deps.state_store.get_workspace_config.return_value = None
+
+        result = process_setup_message(
+            text="", action_id="calendar_enable", setup_state=state, deps=deps
+        )
+
+        assert result.calendar_enabled is False
+
+    def test_calendar_enable_sets_oauth_initiated(self):
+        """Calendar enable should set calendar_oauth_initiated=True."""
+        state = _make_state(step="calendar")
+        deps = _make_deps()
+        deps.state_store.get_pending_users.return_value = []
+        deps.state_store.get_workspace_config.return_value = None
+
+        result = process_setup_message(
+            text="", action_id="calendar_enable", setup_state=state, deps=deps
+        )
+
+        assert result.calendar_oauth_initiated is True
+
+    def test_summary_shows_pending_when_oauth_initiated(self):
+        """Summary should say 'Pending authorization' when OAuth initiated but not completed."""
+        state = _make_state(step="calendar")
+        deps = _make_deps()
+        deps.state_store.get_pending_users.return_value = []
+        deps.state_store.get_workspace_config.return_value = None
+
+        process_setup_message(
+            text="", action_id="calendar_enable", setup_state=state, deps=deps
+        )
+
+        messages = [c[1]["text"] for c in deps.slack_client.send_message.call_args_list]
+        summary_msg = [m for m in messages if "Setup Complete" in m]
+        assert len(summary_msg) == 1
+        assert "pending" in summary_msg[0].lower()
+
+    def test_summary_preserves_existing_calendar_enabled(self):
+        """If OAuth callback already set calendar_enabled=True on CONFIG, preserve it."""
+        state = _make_state(step="calendar")
+        deps = _make_deps()
+        deps.state_store.get_pending_users.return_value = []
+        # Simulate: OAuth callback already flipped calendar_enabled=True on CONFIG
+        existing_config = WorkspaceConfig(
+            workspace_id="W1",
+            team_name="Test",
+            bot_user_id="BOT1",
+            calendar_enabled=True,
+        )
+        deps.state_store.get_workspace_config.return_value = existing_config
+
+        process_setup_message(
+            text="", action_id="calendar_enable", setup_state=state, deps=deps
+        )
+
+        # complete_setup should be called with calendar_enabled=True
+        call_kwargs = deps.state_store.complete_setup.call_args[1]
+        assert call_kwargs["config_updates"]["calendar_enabled"] is True
+
+
+class TestConfirmationIdempotency:
+    def test_second_confirmation_does_not_re_run_completion(self):
+        """If setup_complete is already True, don't call complete_setup again."""
+        state = _make_state(
+            step="confirmation",
+            website_url="https://example.com",
+            teams=("Eng",),
+            channel_mapping={"eng": "C1"},
+        )
+        deps = _make_deps()
+        existing_config = WorkspaceConfig(
+            workspace_id="W1",
+            team_name="Test",
+            bot_user_id="BOT1",
+            setup_complete=True,
+        )
+        deps.state_store.get_workspace_config.return_value = existing_config
+
+        result = process_setup_message(
+            text="", action_id=None, setup_state=state, deps=deps
+        )
+
+        assert result.step == "done"
+        deps.state_store.complete_setup.assert_not_called()
+        deps.state_store.get_pending_users.assert_not_called()
+        # Summary message should still be sent
+        deps.slack_client.send_message.assert_called_once()
+
+    def test_first_confirmation_runs_full_completion(self):
+        """First confirmation should run complete_setup and enqueue pending users."""
+        state = _make_state(
+            step="confirmation",
+            website_url="https://example.com",
+            teams=("Eng",),
+            channel_mapping={"eng": "C1"},
+        )
+        deps = _make_deps()
+        deps.state_store.get_workspace_config.return_value = None
+        deps.state_store.get_pending_users.return_value = []
+
+        result = process_setup_message(
+            text="", action_id=None, setup_state=state, deps=deps
+        )
+
+        assert result.step == "done"
+        deps.state_store.complete_setup.assert_called_once()

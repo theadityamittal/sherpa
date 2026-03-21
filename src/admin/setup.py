@@ -441,7 +441,11 @@ def _handle_calendar(
             text=f"Please authorize Google Calendar access:\n{oauth_url}",
         )
         new_state = replace(
-            state, step="confirmation", calendar_enabled=True, updated_at=_now_iso()
+            state,
+            step="confirmation",
+            calendar_enabled=False,
+            calendar_oauth_initiated=True,
+            updated_at=_now_iso(),
         )
         deps.state_store.save_setup_state(setup_state=new_state)
         return _handle_confirmation(text="", action_id=None, state=new_state, deps=deps)
@@ -463,16 +467,17 @@ def _handle_calendar(
     return state
 
 
-def _handle_confirmation(
-    *, text: str, action_id: str | None, state: SetupState, deps: SetupDependencies
-) -> SetupState:
-    """Show summary, write WorkspaceConfig, delete SETUP record, enqueue pending users."""
-    # Build summary
+def _send_summary(
+    *,
+    state: SetupState,
+    deps: SetupDependencies,
+    calendar_str: str,
+) -> None:
+    """Send the setup completion summary message."""
     teams_str = ", ".join(state.teams) if state.teams else "None"
     mapping_str = (
         ", ".join(f"{k} -> {v}" for k, v in state.channel_mapping.items()) or "None"
     )
-    calendar_str = "Enabled" if state.calendar_enabled else "Disabled"
 
     deps.slack_client.send_message(
         channel=state.admin_user_id,
@@ -486,6 +491,35 @@ def _handle_confirmation(
         ),
     )
 
+
+def _handle_confirmation(
+    *, text: str, action_id: str | None, state: SetupState, deps: SetupDependencies
+) -> SetupState:
+    """Show summary, write WorkspaceConfig, delete SETUP record, enqueue pending users."""
+    # Idempotency guard: if setup already completed, just re-send summary
+    existing_config = deps.state_store.get_workspace_config(
+        workspace_id=state.workspace_id
+    )
+    if existing_config is not None and existing_config.setup_complete:
+        calendar_str = "Enabled" if existing_config.calendar_enabled else "Disabled"
+        _send_summary(state=state, deps=deps, calendar_str=calendar_str)
+        return replace(state, step="done", updated_at=_now_iso())
+
+    # Determine calendar state — handle race with OAuth callback
+    calendar_enabled = (
+        existing_config.calendar_enabled if existing_config else False
+    ) or state.calendar_enabled
+
+    # Tri-state calendar summary
+    if state.calendar_oauth_initiated and not calendar_enabled:
+        calendar_str = "Pending authorization (check your browser)"
+    elif calendar_enabled:
+        calendar_str = "Enabled"
+    else:
+        calendar_str = "Disabled"
+
+    _send_summary(state=state, deps=deps, calendar_str=calendar_str)
+
     # Write WorkspaceConfig and delete SETUP record
     deps.state_store.complete_setup(
         workspace_id=state.workspace_id,
@@ -494,15 +528,14 @@ def _handle_confirmation(
             "website_url": state.website_url,
             "teams": list(state.teams),
             "channel_mapping": dict(state.channel_mapping),
-            "calendar_enabled": state.calendar_enabled,
+            "calendar_enabled": calendar_enabled,
         },
     )
 
     # Enqueue pending users
     _enqueue_pending_users(state=state, deps=deps)
 
-    new_state = replace(state, step="done", updated_at=_now_iso())
-    return new_state
+    return replace(state, step="done", updated_at=_now_iso())
 
 
 # ---------------------------------------------------------------------------
