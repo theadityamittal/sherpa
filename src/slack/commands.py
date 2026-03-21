@@ -11,14 +11,15 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from slack.blocks import calendar_setup_prompt, relink_calendar
+from slack.models import EventType, SlackCommand, SQSMessage
 from state.models import SetupState, StepStatus
 
 if TYPE_CHECKING:
-    from slack.models import SlackCommand
     from state.dynamo import DynamoStateStore
 
 logger = logging.getLogger(__name__)
@@ -102,18 +103,31 @@ def _handle_setup(
     state_store: DynamoStateStore,
 ) -> dict[str, Any]:
     config = state_store.get_workspace_config(workspace_id=command.workspace_id)
-    if (
-        config is not None
-        and config.admin_user_id
-        and command.user_id != config.admin_user_id
-    ):
+
+    # No CONFIG = app not installed via OAuth yet
+    if config is None:
+        return _response(
+            "Sherpa hasn't been installed yet. Ask a workspace admin to install it."
+        )
+
+    # Admin gate — unconditional
+    if not config.admin_user_id:
+        # First user to run /sherpa-setup claims admin
+        state_store.update_workspace_config(
+            workspace_id=command.workspace_id,
+            updates={"admin_user_id": command.user_id},
+        )
+    elif command.user_id != config.admin_user_id:
         return _response("Only the workspace admin can run setup.")
 
+    # Check for active setup
     setup = state_store.get_setup_state(workspace_id=command.workspace_id)
     if setup is not None:
-        return _response(f"Setup in progress. Resuming from step: {setup.step}")
+        _enqueue_setup_resume(command)
+        return _response(f"Resuming setup from step: {setup.step}")
 
-    if config is not None and config.setup_complete:
+    # Setup already complete — show config
+    if config.setup_complete:
         lines = [
             "*Workspace Configuration*",
             f"• Team: {config.team_name}",
@@ -123,6 +137,7 @@ def _handle_setup(
         ]
         return _response("\n".join(lines))
 
+    # Start fresh setup
     now = datetime.now(UTC).isoformat()
     initial_setup = SetupState(
         step="welcome",
@@ -168,6 +183,25 @@ def _handle_unknown(
         f"Unknown command: `{command.command}`. "
         "Try `/sherpa-help` for available commands."
     )
+
+
+def _enqueue_setup_resume(command: SlackCommand) -> None:
+    """Enqueue a synthetic message so the worker re-renders the current setup step."""
+    from slack.handler import _enqueue_to_sqs
+
+    timestamp_ms = int(time.time() * 1000)
+    msg = SQSMessage(
+        version="1.0",
+        event_id=f"setup_resume:{command.workspace_id}:{command.user_id}:{timestamp_ms}",
+        workspace_id=command.workspace_id,
+        user_id=command.user_id,
+        channel_id=command.channel_id,
+        event_type=EventType.MESSAGE,
+        text="",
+        timestamp=datetime.now(UTC).isoformat(),
+        is_dm=command.channel_id.startswith("D"),
+    )
+    _enqueue_to_sqs(msg)
 
 
 def _response(text: str) -> dict[str, Any]:

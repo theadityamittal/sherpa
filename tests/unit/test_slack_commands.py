@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from slack.commands import handle_command
 from slack.models import SlackCommand
@@ -158,7 +158,10 @@ class TestOnboardSetup:
 
     def test_no_setup_starts_fresh(self):
         mock_store = MagicMock()
-        mock_store.get_workspace_config.return_value = None
+        # CONFIG must exist for setup to proceed (OAuth creates it)
+        mock_store.get_workspace_config.return_value = _make_config(
+            admin_user_id="ADMIN1"
+        )
         mock_store.get_setup_state.return_value = None
         response = handle_command(
             _make_command("/sherpa-setup", user_id="ADMIN1"),
@@ -232,6 +235,82 @@ class TestOnboardCalendar:
         assert "blocks" in parsed
         blocks_text = json.dumps(parsed["blocks"])
         assert "enable" in blocks_text.lower() or "calendar_enable" in blocks_text
+
+
+class TestAdminGate:
+    def test_no_config_rejects_setup(self):
+        """CONFIG=None should reject with install message."""
+        mock_store = MagicMock()
+        mock_store.get_workspace_config.return_value = None
+        response = handle_command(
+            _make_command("/sherpa-setup", user_id="ANYONE"),
+            state_store=mock_store,
+        )
+        body = response["body"]
+        assert "installed" in body.lower() or "install" in body.lower()
+        mock_store.save_setup_state.assert_not_called()
+
+    def test_empty_admin_claims_admin(self):
+        """CONFIG with empty admin_user_id lets first user claim admin."""
+        mock_store = MagicMock()
+        mock_store.get_workspace_config.return_value = _make_config(admin_user_id="")
+        mock_store.get_setup_state.return_value = None
+        mock_store.update_workspace_config = MagicMock()
+
+        response = handle_command(
+            _make_command("/sherpa-setup", user_id="U_FIRST"),
+            state_store=mock_store,
+        )
+        body = response["body"]
+        assert "starting" in body.lower() or "setup" in body.lower()
+        mock_store.update_workspace_config.assert_called_once_with(
+            workspace_id="W1",
+            updates={"admin_user_id": "U_FIRST"},
+        )
+
+    def test_non_admin_during_active_setup_rejected(self):
+        """Non-admin should be rejected even when setup is in progress."""
+        mock_store = MagicMock()
+        mock_store.get_workspace_config.return_value = _make_config(
+            admin_user_id="ADMIN1"
+        )
+        response = handle_command(
+            _make_command("/sherpa-setup", user_id="OTHER_USER"),
+            state_store=mock_store,
+        )
+        body = response["body"]
+        assert "admin" in body.lower()
+        mock_store.get_setup_state.assert_not_called()
+
+
+class TestResumeEventId:
+    @patch("slack.commands._enqueue_setup_resume")
+    def test_resume_event_id_has_timestamp(self, mock_enqueue):
+        """Verify that _enqueue_setup_resume is called on resume."""
+        mock_store = MagicMock()
+        mock_store.get_workspace_config.return_value = _make_config(
+            admin_user_id="ADMIN1"
+        )
+        mock_store.get_setup_state.return_value = _make_setup_state(step="teams")
+        handle_command(
+            _make_command("/sherpa-setup", user_id="ADMIN1"),
+            state_store=mock_store,
+        )
+        mock_enqueue.assert_called_once()
+
+    @patch("slack.handler._enqueue_to_sqs")
+    def test_event_id_contains_timestamp_ms(self, mock_sqs):
+        """The SQS message event_id should contain a timestamp component."""
+        from slack.commands import _enqueue_setup_resume
+
+        cmd = _make_command("/sherpa-setup", user_id="ADMIN1")
+        _enqueue_setup_resume(cmd)
+
+        msg = mock_sqs.call_args[0][0]
+        parts = msg.event_id.split(":")
+        assert len(parts) == 4  # setup_resume:workspace:user:timestamp
+        assert parts[0] == "setup_resume"
+        assert parts[3].isdigit()
 
 
 class TestUpdateWorkspaceConfig:
