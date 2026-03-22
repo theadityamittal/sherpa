@@ -21,11 +21,13 @@ from typing import Any
 from urllib.parse import parse_qs
 
 import boto3
+from slack_sdk import WebClient
+
 from slack.client import SlackClient
 from slack.commands import handle_command
 from slack.models import SlackCommand, SlackEvent, SQSMessage
+from slack.queue import enqueue_to_sqs as _enqueue_to_sqs
 from slack.signature import InvalidSignatureError, verify_slack_signature
-from slack_sdk import WebClient
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -260,6 +262,8 @@ def _handle_interaction(body_str: str) -> dict[str, Any]:
     """Handle Block Kit interaction callbacks (buttons, modals).
 
     The body is form-encoded with a single `payload` field containing JSON.
+    Interactions skip the handler middleware chain — they are lightweight
+    DynamoDB state updates, not LLM calls.
     """
     # Kill switch check
     from admin.kill_switch_check import is_kill_switch_active
@@ -292,45 +296,16 @@ def _handle_interaction(body_str: str) -> dict[str, Any]:
     actions = payload.get("actions", [])
     first_action = actions[0] if actions else {}
     action_id = first_action.get("action_id", "")
-    action_value = first_action.get("value", "")
-
-    # Build a synthetic SlackEvent so middleware can run (ConcurrencyGuard,
-    # BotFilter, TokenBudgetGuard).  EmptyFilter and InputSanitizer are
-    # skipped because INTERACTION is not TEAM_JOIN but also has no text body
-    # — we handle that by passing an empty string and relying on the chain
-    # skipping those steps via the INTERACTION type.
-    from slack.models import EventType, SlackEvent
-
-    slack_event = SlackEvent(
-        event_id=f"interaction:{team_id}:{user_id}:{message_ts}",
-        workspace_id=team_id,
-        user_id=user_id,
-        channel_id=channel_id,
-        text="",
-        event_type=EventType.INTERACTION,
-        timestamp=message_ts,
-        is_bot=False,
+    # static_select uses selected_option.value; buttons use value
+    action_value = first_action.get("selected_option", {}).get(
+        "value", first_action.get("value", "")
     )
 
-    chain = _build_middleware_chain(workspace_id=team_id)
-    result = chain.run(slack_event)
-    logger.debug(
-        "Interaction middleware result: allowed=%s, reason=%s",
-        result.allowed,
-        result.reason,
-    )
-
-    if not result.allowed:
-        logger.info(
-            "Interaction blocked by middleware: %s (reason: %s)",
-            slack_event.event_id,
-            result.reason,
-        )
-        return _json_response(200, {"ok": True})
+    from slack.models import EventType
 
     sqs_msg = SQSMessage(
         version="1.0",
-        event_id=slack_event.event_id,
+        event_id=f"interaction:{team_id}:{user_id}:{message_ts}:{action_id}",
         workspace_id=team_id,
         user_id=user_id,
         channel_id=channel_id,
@@ -433,23 +408,6 @@ def _send_ephemeral_rejection(
         slack_client.send_ephemeral(channel=channel_id, user=user_id, text=text)
     except Exception:
         logger.exception("Failed to send ephemeral rejection")
-
-
-def _enqueue_to_sqs(msg: SQSMessage) -> None:
-    """Send a normalized message to the SQS FIFO queue."""
-    queue_url = os.environ.get("SQS_QUEUE_URL", "")
-    if not queue_url:
-        logger.error("SQS_QUEUE_URL not set")
-        return
-
-    sqs = boto3.client("sqs")
-    sqs.send_message(
-        QueueUrl=queue_url,
-        MessageBody=json.dumps(msg.to_dict()),
-        MessageGroupId=f"{msg.workspace_id}#{msg.user_id}",
-        MessageDeduplicationId=msg.event_id,
-    )
-    logger.info("Enqueued event %s to SQS", msg.event_id)
 
 
 def _json_response(status_code: int, body: dict[str, Any]) -> dict[str, Any]:
