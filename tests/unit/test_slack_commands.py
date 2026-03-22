@@ -305,7 +305,7 @@ class TestResumeEventId:
         )
         mock_enqueue.assert_called_once()
 
-    @patch("slack.handler._enqueue_to_sqs")
+    @patch("slack.queue.enqueue_to_sqs")
     def test_event_id_contains_timestamp_ms(self, mock_sqs):
         """The SQS message event_id should contain a timestamp component."""
         from slack.commands import _enqueue_setup_resume

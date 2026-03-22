@@ -444,11 +444,11 @@ class TestGetSigningSecret:
 
 
 class TestEnqueueToSqs:
-    @patch("slack.handler.boto3")
+    @patch("slack.queue.boto3")
     @patch.dict("os.environ", {"SQS_QUEUE_URL": "https://sqs.test/queue.fifo"})
     def test_sends_message_to_sqs(self, mock_boto3):
-        from slack.handler import _enqueue_to_sqs
         from slack.models import EventType, SQSMessage
+        from slack.queue import enqueue_to_sqs
 
         mock_sqs = MagicMock()
         mock_boto3.client.return_value = mock_sqs
@@ -463,14 +463,14 @@ class TestEnqueueToSqs:
             text="hi",
             timestamp="2026-01-01T00:00:00Z",
         )
-        _enqueue_to_sqs(msg)
+        enqueue_to_sqs(msg)
         mock_sqs.send_message.assert_called_once()
 
-    @patch("slack.handler.boto3")
+    @patch("slack.queue.boto3")
     @patch.dict("os.environ", {"SQS_QUEUE_URL": ""})
     def test_skips_when_no_queue_url(self, mock_boto3):
-        from slack.handler import _enqueue_to_sqs
         from slack.models import EventType, SQSMessage
+        from slack.queue import enqueue_to_sqs
 
         msg = SQSMessage(
             version="1.0",
@@ -482,7 +482,7 @@ class TestEnqueueToSqs:
             text="hi",
             timestamp="2026-01-01T00:00:00Z",
         )
-        _enqueue_to_sqs(msg)
+        enqueue_to_sqs(msg)
         mock_boto3.client.assert_not_called()
 
 

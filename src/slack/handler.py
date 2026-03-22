@@ -26,6 +26,7 @@ from slack_sdk import WebClient
 from slack.client import SlackClient
 from slack.commands import handle_command
 from slack.models import SlackCommand, SlackEvent, SQSMessage
+from slack.queue import enqueue_to_sqs as _enqueue_to_sqs
 from slack.signature import InvalidSignatureError, verify_slack_signature
 
 logger = logging.getLogger(__name__)
@@ -407,23 +408,6 @@ def _send_ephemeral_rejection(
         slack_client.send_ephemeral(channel=channel_id, user=user_id, text=text)
     except Exception:
         logger.exception("Failed to send ephemeral rejection")
-
-
-def _enqueue_to_sqs(msg: SQSMessage) -> None:
-    """Send a normalized message to the SQS FIFO queue."""
-    queue_url = os.environ.get("SQS_QUEUE_URL", "")
-    if not queue_url:
-        logger.error("SQS_QUEUE_URL not set")
-        return
-
-    sqs = boto3.client("sqs")
-    sqs.send_message(
-        QueueUrl=queue_url,
-        MessageBody=json.dumps(msg.to_dict()),
-        MessageGroupId=f"{msg.workspace_id}#{msg.user_id}",
-        MessageDeduplicationId=msg.event_id,
-    )
-    logger.info("Enqueued event %s to SQS", msg.event_id)
 
 
 def _json_response(status_code: int, body: dict[str, Any]) -> dict[str, Any]:

@@ -386,8 +386,8 @@ def _create_orchestrator(
         from gcal.client import GoogleCalendarClient
         from security.crypto import FieldEncryptor
 
-        google_client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
-        google_client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+        google_client_id = secrets.get("google_client_id", "")
+        google_client_secret = secrets.get("google_client_secret", "")
         kms_key_id = os.environ.get("KMS_KEY_ID", "")
 
         gcal_client = GoogleCalendarClient(
@@ -444,7 +444,7 @@ def _handle_calendar_interaction(
         workspace_id,
     )
 
-    if action_id == "calendar_enable" or action_id == "calendar_relink":
+    if action_id in ("calendar_enable", "calendar_relink"):
         secrets = _get_app_secrets()
         google_client_id = secrets.get("google_client_id", "")
         redirect_uri = secrets.get("google_oauth_redirect_uri", "")
@@ -472,6 +472,10 @@ def _handle_calendar_interaction(
         )
 
     elif action_id == "calendar_skip_setup":
+        state_store.update_workspace_config(
+            workspace_id=workspace_id,
+            updates={"calendar_enabled": False},
+        )
         slack_client.send_message(
             channel=user_id,
             text="Calendar integration skipped. You can enable it later with `/sherpa-calendar`.",

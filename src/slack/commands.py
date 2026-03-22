@@ -121,12 +121,6 @@ def _handle_setup(
     elif command.user_id != config.admin_user_id:
         return _response("Only the workspace admin can run setup.")
 
-    # Check for active setup
-    setup = state_store.get_setup_state(workspace_id=command.workspace_id)
-    if setup is not None:
-        _enqueue_setup_resume(command)
-        return _response(f"Resuming setup from step: {setup.step}")
-
     # Setup already complete — show config
     if config is not None and config.setup_complete:
         lines = [
@@ -137,6 +131,12 @@ def _handle_setup(
             f"• Calendar enabled: {'Yes' if config.calendar_enabled else 'No'}",
         ]
         return _response("\n".join(lines))
+
+    # Check for active setup (after setup_complete check to avoid stale SETUP loops)
+    setup = state_store.get_setup_state(workspace_id=command.workspace_id)
+    if setup is not None:
+        _enqueue_setup_resume(command)
+        return _response(f"Resuming setup from step: {setup.step}")
 
     # Start fresh setup
     now = datetime.now(UTC).isoformat()
@@ -189,7 +189,7 @@ def _handle_unknown(
 
 def _enqueue_setup_resume(command: SlackCommand) -> None:
     """Enqueue a synthetic message so the worker re-renders the current setup step."""
-    from slack.handler import _enqueue_to_sqs
+    from slack.queue import enqueue_to_sqs
 
     timestamp_ms = int(time.time() * 1000)
     msg = SQSMessage(
@@ -203,7 +203,7 @@ def _enqueue_setup_resume(command: SlackCommand) -> None:
         timestamp=datetime.now(UTC).isoformat(),
         is_dm=command.channel_id.startswith("D"),
     )
-    _enqueue_to_sqs(msg)
+    enqueue_to_sqs(msg)
 
 
 def _response(text: str) -> dict[str, Any]:

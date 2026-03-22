@@ -347,6 +347,19 @@ def _transition_to_channels(
     """Fetch channels, find #general as default, show channel_mapping Block Kit."""
     channels = deps.slack_client.list_channels()
 
+    if not channels:
+        deps.slack_client.send_message(
+            channel=state.admin_user_id,
+            text=(
+                "No channels found in your workspace. "
+                "Please create at least one channel in Slack, "
+                "then run `/sherpa-setup` to resume."
+            ),
+        )
+        new_state = replace(state, step="channels", updated_at=_now_iso())
+        deps.state_store.save_setup_state(setup_state=new_state)
+        return new_state
+
     # Find #general: is_general flag first, then name match, then first channel
     default_channel = None
     for ch in channels:
@@ -358,11 +371,11 @@ def _transition_to_channels(
             if ch.get("name") == "general":
                 default_channel = ch
                 break
-    if default_channel is None and channels:
+    if default_channel is None:
         default_channel = channels[0]
 
     # Pre-populate all teams mapped to default channel
-    default_id = default_channel["id"] if default_channel else ""
+    default_id = default_channel["id"]
     pre_mapping = {_slugify(t): default_id for t in state.teams}
 
     blocks = channel_mapping(
