@@ -10,6 +10,7 @@ Run: .venv/bin/pytest tests/e2e/test_gcal_e2e.py -v -m e2e --no-cov -s
 from __future__ import annotations
 
 import contextlib
+import warnings
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -33,9 +34,13 @@ class TestGoogleCalendarE2E:
 
         try:
             result = client.refresh_access_token(refresh_token=google_refresh_token)
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 401:
-                pytest.skip("Google refresh token expired (7-day Testing mode limit)")
+        except ValueError as exc:
+            if "invalid_grant" in str(exc):
+                msg = (
+                    "Google refresh token expired or revoked (7-day Testing mode limit)"
+                )
+                warnings.warn(msg, stacklevel=1)
+                pytest.skip(msg)
             raise
 
         assert "access_token" in result
@@ -53,9 +58,13 @@ class TestGoogleCalendarE2E:
         # Get fresh access token
         try:
             token_data = client.refresh_access_token(refresh_token=google_refresh_token)
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 401:
-                pytest.skip("Google refresh token expired (7-day Testing mode limit)")
+        except ValueError as exc:
+            if "invalid_grant" in str(exc):
+                msg = (
+                    "Google refresh token expired or revoked (7-day Testing mode limit)"
+                )
+                warnings.warn(msg, stacklevel=1)
+                pytest.skip(msg)
             raise
         access_token = token_data["access_token"]
 
