@@ -133,7 +133,7 @@ class TestRAGPipelineE2E:
             max_expected_results=5,
         )
 
-        assert (
-            confidence.score < 0.2
-        ), f"Nonsense query should have low confidence, got {confidence.score}"
+        assert confidence.score < 0.2, (
+            f"Nonsense query should have low confidence, got {confidence.score}"
+        )
         print(f"  Confidence for nonsense query: {confidence.score}")

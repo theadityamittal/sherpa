@@ -192,9 +192,9 @@ class TestGetBotToken:
         import inspect
 
         source = inspect.getsource(_get_bot_token)
-        assert (
-            "_get_app_secrets" not in source
-        ), "bot_token must not be fetched from Secrets Manager"
+        assert "_get_app_secrets" not in source, (
+            "bot_token must not be fetched from Secrets Manager"
+        )
 
 
 class TestWorkerSetupRouting:

@@ -234,9 +234,9 @@ class TestAllBuildersReturnValidBlockKit:
         for block in blocks:
             assert isinstance(block, dict), "each block must be a dict"
             assert "type" in block, f"block missing 'type': {block}"
-            assert (
-                block["type"] in self.VALID_TYPES
-            ), f"unknown block type '{block['type']}'"
+            assert block["type"] in self.VALID_TYPES, (
+                f"unknown block type '{block['type']}'"
+            )
             if block["type"] == "section":
                 assert "text" in block, "section block must have 'text'"
                 assert block["text"]["type"] in (
